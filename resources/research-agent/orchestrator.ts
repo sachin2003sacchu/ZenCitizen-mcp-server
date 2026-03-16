@@ -15,6 +15,7 @@ import type {
 import { classifySentiment, classifyComment, calculateHelpfulnessScore, extractKeyPoints } from "./classifier.js";
 import { findGovernmentService } from "./services-db.js";
 import { enrichGovernmentService } from "./services-fetcher.js";
+import { inferGovernmentLinks } from "./llm.js";
 
 /**
  * Research Agent Orchestrator
@@ -290,14 +291,48 @@ export async function compileResearchResult(
   // Generate recommended actions
   const recommendedActions = generateRecommendations(query, topKeyPoints, allResources);
 
-  // Find related government service and try to enrich with document links
+  // Find related government service and ALWAYS run LLM inference in parallel
   let governmentService = findGovernmentService(query);
-  if (governmentService) {
-    try {
-      governmentService = await enrichGovernmentService(governmentService);
-    } catch (err) {
-      // Non-fatal: keep original governmentService if enrichment fails
-      console.warn("Failed to enrich government service:", (err as any)?.message || err);
+
+  const [enriched, inferred] = await Promise.all([
+    governmentService
+      ? enrichGovernmentService(governmentService).catch((err) => {
+          console.warn("Failed to enrich government service:", (err as any)?.message || err);
+          return governmentService;
+        })
+      : Promise.resolve(null),
+    inferGovernmentLinks(query).catch((err) => {
+      console.warn("LLM gov link inference failed:", (err as any)?.message || err);
+      return null;
+    }),
+  ]);
+
+  if (enriched) governmentService = enriched;
+
+  // Always merge LLM-inferred official links — whether DB matched or not
+  if (inferred && inferred.officialLinks.length > 0) {
+    if (!governmentService) {
+      governmentService = {
+        id: "llm-inferred",
+        name: inferred.serviceName,
+        description: inferred.description,
+        category: inferred.category,
+        keywords: [],
+        officialLinks: inferred.officialLinks,
+        documentLinks: [],
+        requirements: [],
+        processingTime: "Varies",
+        relatedServices: [],
+        state: undefined,
+      };
+    } else {
+      // Merge LLM links into existing DB service (deduplicated)
+      governmentService = {
+        ...governmentService,
+        officialLinks: Array.from(
+          new Set([...(governmentService.officialLinks || []), ...inferred.officialLinks])
+        ),
+      };
     }
   }
 
