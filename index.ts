@@ -291,7 +291,8 @@ Output Rules:
 2. Only use URLs that were returned by this tool — never invent URLs.
 3. Do not remove, shorten, or rewrite any source URL.
 4. Do not fabricate facts, steps, fees, or requirements not present in the retrieved data.
-5. Every important claim must have a supporting source URL from the retrieved data.`;
+5. Every important claim must have a supporting source URL from the retrieved data.
+6. Preserve the exact headings Information: and Sources: in every section.`;
 
 server.tool(
   {
@@ -323,11 +324,32 @@ server.tool(
       const topTweetLinks = topTweets.map((t: any) => ({ title: t.title, url: t.url, credibility: t.credibility }));
       const topKeyPoints = result.topKeyPoints.slice(0, 5);
       const topActions = result.recommendedActions.slice(0, 5);
+      const allSourceUrls = Array.from(
+        new Set(
+          [
+            ...topResources.map((r: any) => r.url),
+            ...actionLinks.map((a: any) => a.url),
+            ...(result.governmentService?.officialLinks || []),
+            ...(result.governmentService?.documentLinks || []),
+          ].filter((u): u is string => Boolean(u && typeof u === "string"))
+        )
+      );
 
       const sections: string[] = [
         `> NOTE: All content below is sourced exclusively from the MCP server context. Do not add, invent, or replace any information or URLs.`,
         ``,
       ];
+
+      const addSources = (urls: string[]) => {
+        sections.push(`Sources:`);
+        const unique = Array.from(new Set(urls.filter(Boolean)));
+        if (unique.length > 0) {
+          unique.forEach((url) => sections.push(url));
+        } else {
+          sections.push(`No source URLs available in retrieved data.`);
+        }
+        sections.push(``);
+      };
 
       // Section: About This Service
       if (result.governmentService) {
@@ -338,11 +360,7 @@ server.tool(
         sections.push(svc.description);
         if (svc.category) sections.push(`Category: ${svc.category}${svc.state ? ` | State: ${svc.state}` : ``}`);
         sections.push(``);
-        if (svc.officialLinks.length > 0) {
-          sections.push(`Sources:`);
-          svc.officialLinks.forEach((link: string) => sections.push(link));
-        }
-        sections.push(``);
+        addSources(svc.officialLinks);
       }
 
       // Section: Requirements
@@ -355,11 +373,7 @@ server.tool(
         svc.requirements.forEach((req: string) => sections.push(`- ${req}`));
         sections.push(``);
         const reqLinks = [...(svc.officialLinks || []), ...(svc.documentLinks || [])].slice(0, 6);
-        if (reqLinks.length > 0) {
-          sections.push(`Sources:`);
-          reqLinks.forEach((link: string) => sections.push(link));
-        }
-        sections.push(``);
+        addSources(reqLinks.length > 0 ? reqLinks : allSourceUrls);
       }
 
       // Section: Official Action Links
@@ -369,9 +383,7 @@ server.tool(
         sections.push(`Information:`);
         actionLinks.forEach((a: any) => sections.push(`- ${a.label}: ${a.url}`));
         sections.push(``);
-        sections.push(`Sources:`);
-        actionLinks.forEach((a: any) => sections.push(a.url));
-        sections.push(``);
+        addSources(actionLinks.map((a: any) => a.url));
       }
 
       // Section: YouTube Videos
@@ -385,9 +397,7 @@ server.tool(
           comments.forEach((c: any) => sections.push(`   - "${String(c.text).replace(/\s+/g, " ").slice(0, 160)}" (${c.likes} likes)`));
         });
         sections.push(``);
-        sections.push(`Sources:`);
-        topVideos.forEach((v: any) => sections.push(v.url));
-        sections.push(``);
+        addSources(topVideos.map((v: any) => v.url));
       }
 
       // Section: Twitter/X
@@ -397,9 +407,7 @@ server.tool(
         sections.push(`Information:`);
         topTweets.forEach((t: any, i: number) => sections.push(`${i + 1}. ${t.title.substring(0, 140)}`));
         sections.push(``);
-        sections.push(`Sources:`);
-        topTweets.forEach((t: any) => sections.push(t.url));
-        sections.push(``);
+        addSources(topTweets.map((t: any) => t.url));
       }
 
       // Section: Key Insights
@@ -409,6 +417,7 @@ server.tool(
         sections.push(`Information:`);
         topKeyPoints.forEach((kp: any) => sections.push(`- ${kp.text}`));
         sections.push(``);
+        addSources(allSourceUrls);
       }
 
       // Section: Recommended Next Steps
@@ -418,11 +427,7 @@ server.tool(
         sections.push(`Information:`);
         topActions.forEach((a: string, i: number) => sections.push(`${i + 1}. ${a}`));
         sections.push(``);
-        if (actionLinks.length > 0) {
-          sections.push(`Sources:`);
-          actionLinks.slice(0, 4).forEach((a: any) => sections.push(a.url));
-        }
-        sections.push(``);
+        addSources(allSourceUrls);
       }
 
       const responseMarkdown = sections.join("\n");
