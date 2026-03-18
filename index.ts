@@ -297,9 +297,9 @@ Output Rules:
 server.tool(
   {
     name: "research-government-query",
-    description: "India-specific research agent for Indian government services. IMPORTANT: Use ONLY retrieved data in responses — never fabricate facts. Every section must include a Sources block with real URLs from the tool output. Do not replace URLs with generic text.",
+    description: "India-specific research agent for Indian government services with LIVE government portal extraction. IMPORTANT: (1) Uses AI to dynamically extract official government links for ANY query, (2) Automatically scrapes portals to extract forms, documents, requirements, and processing times, (3) Returns ONLY retrieved data — never fabricate facts, (4) Every section must include Sources block with real URLs. Process: Query → LLM identifies service → Web scraper extracts live portal data → Results returned with official links and documents.",
     schema: z.object({
-      query: z.string().describe("Indian government service query (e.g., 'How do I get 10th marks card if I lost it?', 'How to apply for PAN card')"),
+      query: z.string().describe("Indian government service query (e.g., 'How do I get 10th marks card if I lost it?', 'How to apply for PAN card', 'International driving permit in bangalore')"),
       instructions: z.string().default(SOURCE_FORMAT_INSTRUCTIONS).describe("Formatting instructions. Defaults to Information/Sources format: every section has retrieved content followed by real source URLs. Do not override unless needed."),
     }),
   },

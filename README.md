@@ -50,6 +50,20 @@
 
 Visit our [docs](https://mcp-use.com/docs) or jump to a quickstart ([TypeScript](https://mcp-use.com/docs/typescript/getting-started/quickstart) | [Python](https://mcp-use.com/docs/python/getting-started/quickstart))
 
+## Project Documentation
+
+### Troubleshooting & Incidents
+- [Technical Breakthroughs & Incident Log](docs/windows-node24-widget-dev-incident.md) — comprehensive Windows environment issues, root causes, fixes, and lessons learned across all development sessions
+
+### Architecture & Design
+- [Component Architecture & Technical Breakthroughs](docs/component-architecture-breakthroughs.md) — deep-dive into three key components (API-Results, Product-Search-Result, Research-Agent): what problems were solved, design decisions, comparisons of approaches, and lessons learned
+- [Government Links Extraction Architecture](docs/government-links-extraction-architecture.md) — how and where government website links are discovered (hardcoded database, web scraping, LLM inference), why some queries return links and others don't, current limitations and what needs to be fixed
+
+### Solutions & Improvements
+- [Solutions: Overcoming Government Links Problem](docs/solutions-government-links.md) — practical step-by-step fixes ranked by effort (quick wins first), implementation roadmap, testing checklist, and expected improvements (Day 1: +70% query coverage, Day 2: caching + validation, Week 2: health monitoring)
+- [Dynamic Government Links Extraction](docs/dynamic-government-links-extraction.md) — **RECOMMENDED**: No hardcoding approach — LLM extracts links on-demand for ANY query, caches results, and requires ~0 maintenance (Step-by-step implementation with code examples)
+- [Dynamic Web Scraping: Extract Forms & Documents On-Demand](docs/dynamic-web-scraping-forms-docs.md) — **ADVANCED**: After LLM finds links, automatically scrape government portals to extract forms, required documents, requirements, processing time, and step-by-step procedures (zero hardcoding, complete automation)
+
 ### Skills for Coding Agents
 
 > **Using Claude Code, Codex, Cursor or other AI coding agents?**

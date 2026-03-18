@@ -15,7 +15,8 @@ import type {
 import { classifySentiment, classifyComment, calculateHelpfulnessScore, extractKeyPoints } from "./classifier.js";
 import { findGovernmentService } from "./services-db.js";
 import { enrichGovernmentService } from "./services-fetcher.js";
-import { inferGovernmentLinks } from "./llm.js";
+import { inferGovernmentLinks, extractGovernmentLinksForQuery } from "./llm.js";
+import type { ScrapedPageInfo } from "./dynamic-scraper.js";
 
 /**
  * Research Agent Orchestrator
@@ -291,49 +292,47 @@ export async function compileResearchResult(
   // Generate recommended actions
   const recommendedActions = generateRecommendations(query, topKeyPoints, allResources);
 
-  // Find related government service and ALWAYS run LLM inference in parallel
+  // Find related government service
   let governmentService = findGovernmentService(query);
 
-  const [enriched, inferred] = await Promise.all([
-    governmentService
-      ? enrichGovernmentService(governmentService).catch((err) => {
-          console.warn("Failed to enrich government service:", (err as any)?.message || err);
-          return governmentService;
-        })
-      : Promise.resolve(null),
-    inferGovernmentLinks(query).catch((err) => {
-      console.warn("LLM gov link inference failed:", (err as any)?.message || err);
-      return null;
-    }),
-  ]);
+  // ONLY call LLM if we don't already have a database result
+  // This prevents unnecessary rate limiting
+  const inferred = !governmentService 
+    ? await extractGovernmentLinksForQuery(query).catch((err) => {
+        console.warn("[LLM] Gov link extraction failed:", (err as any)?.message || err);
+        return null;
+      })
+    : null;
+
+  // Enrich DB result if found
+  const enriched = governmentService
+    ? await enrichGovernmentService(governmentService).catch((err) => {
+        console.warn("Failed to enrich government service:", (err as any)?.message || err);
+        return governmentService;
+      })
+    : null;
 
   if (enriched) governmentService = enriched;
 
-  // Always merge LLM-inferred official links — whether DB matched or not
-  if (inferred && inferred.officialLinks.length > 0) {
-    if (!governmentService) {
-      governmentService = {
-        id: "llm-inferred",
-        name: inferred.serviceName,
-        description: inferred.description,
-        category: inferred.category,
-        keywords: [],
-        officialLinks: inferred.officialLinks,
-        documentLinks: [],
-        requirements: [],
-        processingTime: "Varies",
-        relatedServices: [],
-        state: undefined,
-      };
-    } else {
-      // Merge LLM links into existing DB service (deduplicated)
-      governmentService = {
-        ...governmentService,
-        officialLinks: Array.from(
-          new Set([...(governmentService.officialLinks || []), ...inferred.officialLinks])
-        ),
-      };
-    }
+  // If no DB match, use LLM-inferred result
+  if (!governmentService && inferred && inferred.officialLinks.length > 0) {
+    governmentService = {
+      id: "llm-extracted",
+      name: inferred.serviceName,
+      description: inferred.description,
+      category: inferred.category,
+      keywords: inferred.keywords || [],
+      officialLinks: inferred.officialLinks,
+      documentLinks: extractDocumentLinksFromScraped(
+        inferred.scrapedInfo,
+        inferred.officialLinks,
+        [query, inferred.serviceName, ...(inferred.keywords || [])]
+      ),
+      requirements: extractRequirementsFromScraped(inferred.scrapedInfo),
+      processingTime: extractProcessingTimeFromScraped(inferred.scrapedInfo),
+      relatedServices: [],
+      state: inferred.state,
+    };
   }
 
   return {
@@ -395,4 +394,93 @@ function generateRecommendations(
   }
 
   return recommendations.slice(0, 5);
+}
+
+/**
+ * Extract document links from scraped portal information
+ */
+function extractDocumentLinksFromScraped(
+  scrapedInfo?: ScrapedPageInfo[],
+  officialLinks: string[] = [],
+  terms: string[] = []
+): string[] {
+  if (!scrapedInfo?.length) return [];
+
+  const officialHosts = new Set(
+    officialLinks
+      .map((url) => {
+        try {
+          return new URL(url).hostname.replace(/^www\./, "");
+        } catch {
+          return "";
+        }
+      })
+      .filter(Boolean)
+  );
+
+  const normalizedTerms = terms
+    .flatMap((t) => t.toLowerCase().split(/[^a-z0-9]+/g))
+    .filter((t) => t.length >= 3 && !["the", "for", "and", "with", "from", "india"].includes(t));
+
+  const docs = scrapedInfo
+    .flatMap((info) => info.documents || [])
+    .map((doc) => doc.url)
+    .filter((url) => {
+      try {
+        const parsed = new URL(url);
+        const host = parsed.hostname.replace(/^www\./, "");
+        if (officialHosts.size > 0 && !officialHosts.has(host)) return false;
+
+        const lowered = (parsed.pathname + parsed.search).toLowerCase();
+        const hasUsefulPattern = /(form|apply|application|permit|license|dl|idp|download|document|pdf)/.test(lowered);
+        const hasTermMatch = normalizedTerms.length === 0 || normalizedTerms.some((t) => lowered.includes(t));
+        return hasUsefulPattern && hasTermMatch;
+      } catch {
+        return false;
+      }
+    });
+
+  // Fallback: if strict filter returns nothing, relax term-match but keep host + useful path constraints.
+  const fallbackDocs = docs.length > 0
+    ? docs
+    : scrapedInfo
+        .flatMap((info) => info.documents || [])
+        .map((doc) => doc.url)
+        .filter((url) => {
+          try {
+            const parsed = new URL(url);
+            const host = parsed.hostname.replace(/^www\./, "");
+            if (officialHosts.size > 0 && !officialHosts.has(host)) return false;
+            const lowered = (parsed.pathname + parsed.search).toLowerCase();
+            return /(form|apply|application|permit|license|download|document|pdf)/.test(lowered);
+          } catch {
+            return false;
+          }
+        });
+
+  return [...new Set(fallbackDocs)].slice(0, 20);
+}
+
+/**
+ * Extract requirements from scraped portal information
+ */
+function extractRequirementsFromScraped(scrapedInfo?: ScrapedPageInfo[]): string[] {
+  if (!scrapedInfo?.length) return [];
+  
+  return scrapedInfo
+    .flatMap(info => info.requirements || [])
+    .slice(0, 15);
+}
+
+/**
+ * Extract processing time from scraped portal information
+ */
+function extractProcessingTimeFromScraped(scrapedInfo?: ScrapedPageInfo[]): string {
+  if (!scrapedInfo?.length) return "Varies by service";
+  
+  const times = scrapedInfo
+    .map(info => info.processingTime)
+    .filter(Boolean);
+  
+  return times[0] || "Varies by service";
 }
