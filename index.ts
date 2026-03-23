@@ -157,6 +157,60 @@ function buildUserFriendlyNextSteps(input: {
   return dedupeStrings(steps).slice(0, 7);
 }
 
+function buildFallbackInsights(input: {
+  hasGovernmentService: boolean;
+  requirementsCount: number;
+  hasProcessingTime: boolean;
+  officialSourceCount: number;
+  hasVideos: boolean;
+  hasTweets: boolean;
+}): string[] {
+  const insights: string[] = [];
+
+  if (input.hasGovernmentService) {
+    insights.push("Service-specific information was identified from retrieved government context.");
+  }
+  if (input.requirementsCount > 0) {
+    insights.push(`Official requirements were extracted (${input.requirementsCount} items) and listed in this report.`);
+  }
+  if (input.hasProcessingTime) {
+    insights.push("A processing timeline reference was found in retrieved service data.");
+  }
+  if (input.officialSourceCount > 0) {
+    insights.push("Official portal links were identified and prioritized for guidance.");
+  }
+  if (input.hasVideos || input.hasTweets) {
+    insights.push("Community resources were retrieved and should be used only as supplementary context.");
+  }
+
+  if (insights.length === 0) {
+    insights.push("High-confidence insight lines were limited for this query; use the listed official sources as the primary reference.");
+  }
+
+  return dedupeStrings(insights).slice(0, 5);
+}
+
+function buildFallbackNextSteps(input: {
+  actionLinks: Array<{ label: string; url: string; purpose: string }>;
+  officialSourceUrls: string[];
+  allSourceUrls: string[];
+}): string[] {
+  const steps: string[] = [];
+  const preferred = input.actionLinks[0]?.url || input.officialSourceUrls[0] || input.allSourceUrls[0];
+
+  if (preferred) {
+    steps.push(`Open the primary official source first: ${preferred}`);
+  }
+
+  if (input.officialSourceUrls.length > 1) {
+    steps.push("Cross-check service details across the listed official sources before submission.");
+  }
+
+  steps.push("Use the Official Links and Requirements sections in this report as the application checklist.");
+
+  return dedupeStrings(steps).slice(0, 5);
+}
+
 function sanitizeReportLines(lines: string[]): string[] {
   return lines
     .map((line) => line.replace(/\s+$/g, ""))
@@ -501,6 +555,28 @@ server.tool(
         processingTime: result.governmentService?.processingTime,
       });
 
+      const fallbackInsights = buildFallbackInsights({
+        hasGovernmentService: Boolean(result.governmentService),
+        requirementsCount: result.governmentService?.requirements?.length || 0,
+        hasProcessingTime: Boolean(
+          result.governmentService?.processingTime &&
+            !/varies by service/i.test(result.governmentService.processingTime)
+        ),
+        officialSourceCount: officialSourceUrls.length,
+        hasVideos: topVideos.length > 0,
+        hasTweets: topTweets.length > 0,
+      });
+
+      const finalInsights = userFriendlyInsights.length > 0 ? userFriendlyInsights : fallbackInsights;
+
+      const fallbackNextSteps = buildFallbackNextSteps({
+        actionLinks,
+        officialSourceUrls,
+        allSourceUrls,
+      });
+
+      const finalNextSteps = userFriendlyNextSteps.length > 0 ? userFriendlyNextSteps : fallbackNextSteps;
+
       const addSources = (urls: string[]) => {
         sections.push(`Sources:`);
         const unique = Array.from(new Set(urls.filter(Boolean)));
@@ -522,6 +598,13 @@ server.tool(
         if (svc.category) sections.push(`Category: ${svc.category}${svc.state ? ` | State: ${svc.state}` : ``}`);
         sections.push(``);
         addSources(svc.officialLinks);
+      } else {
+        sections.push(`**About This Service — Query Overview**`);
+        sections.push(``);
+        sections.push(`Information:`);
+        sections.push(`Service-specific structured details were limited in the retrieved context for this query.`);
+        sections.push(``);
+        addSources(officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls);
       }
 
       // Section: Requirements
@@ -545,6 +628,17 @@ server.tool(
         actionLinks.forEach((a: any) => sections.push(`- ${a.label}: ${a.url}`));
         sections.push(``);
         addSources(actionLinks.map((a: any) => a.url));
+      } else {
+        sections.push(`**Official Links**`);
+        sections.push(``);
+        sections.push(`Information:`);
+        if (officialSourceUrls.length > 0) {
+          officialSourceUrls.forEach((url) => sections.push(`- Official portal: ${url}`));
+        } else {
+          sections.push(`- No explicit official action link was extracted for this query.`);
+        }
+        sections.push(``);
+        addSources(officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls);
       }
 
       // Section: YouTube Videos
@@ -576,24 +670,20 @@ server.tool(
       }
 
       // Section: Key Insights
-      if (userFriendlyInsights.length > 0) {
-        sections.push(`**Key Insights**`);
-        sections.push(``);
-        sections.push(`Information:`);
-        userFriendlyInsights.forEach((item: string) => sections.push(`- ${item}`));
-        sections.push(``);
-        addSources(officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls);
-      }
+      sections.push(`**Key Insights**`);
+      sections.push(``);
+      sections.push(`Information:`);
+      finalInsights.forEach((item: string) => sections.push(`- ${item}`));
+      sections.push(``);
+      addSources(officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls);
 
       // Section: Recommended Next Steps
-      if (userFriendlyNextSteps.length > 0) {
-        sections.push(`**Recommended Next Steps**`);
-        sections.push(``);
-        sections.push(`Information:`);
-        userFriendlyNextSteps.forEach((step: string, i: number) => sections.push(`${i + 1}. ${step}`));
-        sections.push(``);
-        addSources(officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls);
-      }
+      sections.push(`**Recommended Next Steps**`);
+      sections.push(``);
+      sections.push(`Information:`);
+      finalNextSteps.forEach((step: string, i: number) => sections.push(`${i + 1}. ${step}`));
+      sections.push(``);
+      addSources(officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls);
 
       // Section: Detailed Evidence Ledger
       // This section is intentionally exhaustive to maximize grounded detail for downstream clients.
