@@ -46,6 +46,142 @@ function buildActionLinks(service?: { officialLinks?: string[]; documentLinks?: 
   return [...actionLinks, ...documentLinks];
 }
 
+const BANNED_OUTPUT_PATTERNS = [
+  /\bif you want\b/i,
+  /\bwould you like\b/i,
+  /\bi can also\b/i,
+  /\bi\s*'?m checking\b/i,
+  /\bcalled tool\b/i,
+  /\bcan help you with\b/i,
+];
+
+function normalizeLine(text: string, maxLength = 220): string {
+  const compact = String(text || "")
+    .replace(/\s+/g, " ")
+    .replace(/^["'`\-\s]+|["'`\s]+$/g, "")
+    .trim();
+  return compact.slice(0, maxLength);
+}
+
+function isLikelyNoisyComment(text: string): boolean {
+  const cleaned = normalizeLine(text, 260);
+  if (!cleaned || cleaned.length < 14) return true;
+
+  const lower = cleaned.toLowerCase();
+  if (/^[^a-z0-9\u0C80-\u0CFF]+$/i.test(cleaned)) return true;
+  if (/\b(mam|sir|bro|bhai|tnq|pls|ple|frad)\b/i.test(lower) && cleaned.length < 60) return true;
+  if ((cleaned.match(/[!?]/g) || []).length >= 3) return true;
+  if (/^is\s+this\s+still\s+valid\??$/i.test(lower)) return true;
+
+  return false;
+}
+
+function isDisallowedOutputLine(text: string): boolean {
+  const line = normalizeLine(text, 320);
+  if (!line) return false;
+  return BANNED_OUTPUT_PATTERNS.some((pattern) => pattern.test(line));
+}
+
+function dedupeStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const clean = normalizeLine(value, 260);
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(clean);
+  }
+  return result;
+}
+
+function buildUserFriendlyInsights(
+  keyPoints: Array<{ text: string }>,
+  requirements: string[]
+): string[] {
+  const fromRequirements = requirements
+    .map((item) => normalizeLine(item))
+    .filter((item) => item.length > 8)
+    .slice(0, 3)
+    .map((item) => `Requirement identified from official sources: ${item}`);
+
+  const fromKeyPoints = keyPoints
+    .map((kp) => normalizeLine(kp.text))
+    .filter((line) => line.length > 20 && line.length < 200)
+    .filter((line) => !isLikelyNoisyComment(line))
+    .filter((line) => !/\?\s*$/.test(line))
+    .slice(0, 4)
+    .map((line) => `Community-reported issue trend: ${line}`);
+
+  return dedupeStrings([...fromRequirements, ...fromKeyPoints]).slice(0, 6);
+}
+
+function buildUserFriendlyNextSteps(input: {
+  actionLinks: Array<{ label: string; url: string; purpose: string }>;
+  requirements: string[];
+  processingTime?: string;
+}): string[] {
+  const steps: string[] = [];
+
+  const applyLink = input.actionLinks.find((a) => a.purpose === "apply") || input.actionLinks[0];
+  if (applyLink) {
+    steps.push(`Open the official application portal: ${applyLink.url}`);
+  }
+
+  const docLinks = input.actionLinks.filter((a) => a.purpose === "document").slice(0, 2);
+  docLinks.forEach((doc) => {
+    steps.push(`Review the official form/document before applying: ${doc.url}`);
+  });
+
+  input.requirements
+    .map((req) => normalizeLine(req))
+    .filter((req) => req.length > 8)
+    .slice(0, 3)
+    .forEach((req) => {
+      steps.push(`Prepare required detail/document: ${req}`);
+    });
+
+  if (input.processingTime) {
+    const cleaned = normalizeLine(input.processingTime, 120);
+    if (cleaned && !/varies by service/i.test(cleaned)) {
+      steps.push(`Plan follow-up based on the processing timeline: ${cleaned}`);
+    }
+  }
+
+  const helpLink = input.actionLinks.find((a) => a.purpose === "help");
+  if (helpLink) {
+    steps.push(`Use the official help/status channel if submission fails: ${helpLink.url}`);
+  }
+
+  return dedupeStrings(steps).slice(0, 7);
+}
+
+function sanitizeReportLines(lines: string[]): string[] {
+  return lines
+    .map((line) => line.replace(/\s+$/g, ""))
+    .filter((line) => !isDisallowedOutputLine(line));
+}
+
+function validateReportOrThrow(reportMarkdown: string): void {
+  const requiredSections = [
+    "**About This Service",
+    "**Official Links**",
+    "**Key Insights**",
+    "**Recommended Next Steps**",
+  ];
+
+  for (const section of requiredSections) {
+    if (!reportMarkdown.includes(section)) {
+      throw new Error(`Report generation blocked: missing required section ${section}`);
+    }
+  }
+
+  if (BANNED_OUTPUT_PATTERNS.some((pattern) => pattern.test(reportMarkdown))) {
+    throw new Error("Report generation blocked: disallowed conversational or tool-status text detected.");
+  }
+}
+
 const server = new MCPServer({
   name: "Zen-Citizen",
   title: "Zen-Citizen", // display name
@@ -317,15 +453,19 @@ server.tool(
         credibility: r.credibility.overall,
         author: r.metadata?.author || undefined,
         summary: r.metadata?.summary || undefined,
-        topComments: (r.opinions || []).slice(0, 3).map((o: any) => ({ text: o.text, sentiment: o.sentiment, likes: o.likes })),
+        topComments: (r.opinions || []).slice(0, 4).map((o: any) => ({
+          text: o.text,
+          sentiment: o.sentiment,
+          label: o.label,
+          likes: o.likes,
+        })),
       }));
 
       const topVideos = topResources.filter((r: any) => r.type === "video").slice(0, 5);
       const topVideoLinks = topVideos.map((v: any) => ({ title: v.title, url: v.url, credibility: v.credibility }));
       const topTweets = topResources.filter((r: any) => r.type === "tweet").slice(0, 5);
       const topTweetLinks = topTweets.map((t: any) => ({ title: t.title, url: t.url, credibility: t.credibility }));
-      const topKeyPoints = result.topKeyPoints.slice(0, 5);
-      const topActions = result.recommendedActions.slice(0, 5);
+      const topKeyPoints = result.topKeyPoints.slice(0, 8);
       const allSourceUrls = Array.from(
         new Set(
           [
@@ -341,6 +481,25 @@ server.tool(
         `> NOTE: All content below is sourced exclusively from the MCP server context. Do not add, invent, or replace any information or URLs.`,
         ``,
       ];
+
+      const officialSourceUrls = Array.from(
+        new Set([
+          ...(result.governmentService?.officialLinks || []),
+          ...(result.governmentService?.documentLinks || []),
+          ...actionLinks.map((a: any) => a.url),
+        ])
+      );
+
+      const userFriendlyInsights = buildUserFriendlyInsights(
+        topKeyPoints,
+        result.governmentService?.requirements || []
+      );
+
+      const userFriendlyNextSteps = buildUserFriendlyNextSteps({
+        actionLinks,
+        requirements: result.governmentService?.requirements || [],
+        processingTime: result.governmentService?.processingTime,
+      });
 
       const addSources = (urls: string[]) => {
         sections.push(`Sources:`);
@@ -395,8 +554,12 @@ server.tool(
         sections.push(`Information:`);
         topVideos.forEach((v: any, i: number) => {
           sections.push(`${i + 1}. ${v.title}`);
-          const comments = (v.topComments || []).slice(0, 2);
-          comments.forEach((c: any) => sections.push(`   - "${String(c.text).replace(/\s+/g, " ").slice(0, 160)}" (${c.likes} likes)`));
+          const comments = (v.topComments || [])
+            .filter((c: any) => c?.label === "information")
+            .map((c: any) => ({ ...c, text: normalizeLine(String(c.text), 160) }))
+            .filter((c: any) => c.text && !isLikelyNoisyComment(c.text))
+            .slice(0, 2);
+          comments.forEach((c: any) => sections.push(`   - "${c.text}" (${c.likes} likes)`));
         });
         sections.push(``);
         addSources(topVideos.map((v: any) => v.url));
@@ -413,23 +576,23 @@ server.tool(
       }
 
       // Section: Key Insights
-      if (topKeyPoints.length > 0) {
+      if (userFriendlyInsights.length > 0) {
         sections.push(`**Key Insights**`);
         sections.push(``);
         sections.push(`Information:`);
-        topKeyPoints.forEach((kp: any) => sections.push(`- ${kp.text}`));
+        userFriendlyInsights.forEach((item: string) => sections.push(`- ${item}`));
         sections.push(``);
-        addSources(allSourceUrls);
+        addSources(officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls);
       }
 
       // Section: Recommended Next Steps
-      if (topActions.length > 0) {
+      if (userFriendlyNextSteps.length > 0) {
         sections.push(`**Recommended Next Steps**`);
         sections.push(``);
         sections.push(`Information:`);
-        topActions.forEach((a: string, i: number) => sections.push(`${i + 1}. ${a}`));
+        userFriendlyNextSteps.forEach((step: string, i: number) => sections.push(`${i + 1}. ${step}`));
         sections.push(``);
-        addSources(allSourceUrls);
+        addSources(officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls);
       }
 
       // Section: Detailed Evidence Ledger
@@ -444,11 +607,15 @@ server.tool(
           sections.push(`   Credibility: ${Math.round(r.credibility)}/100`);
           if (r.author) sections.push(`   Author/Channel: ${r.author}`);
           if (r.summary) sections.push(`   Summary: ${String(r.summary).replace(/\s+/g, " ").trim()}`);
-          const comments = (r.topComments || []).slice(0, 3);
+          const comments = (r.topComments || [])
+            .filter((c: any) => c?.label === "information")
+            .map((c: any) => ({ ...c, text: normalizeLine(String(c.text), 220) }))
+            .filter((c: any) => c.text && !isLikelyNoisyComment(c.text))
+            .slice(0, 3);
           if (comments.length > 0) {
             sections.push(`   Key comments:`);
             comments.forEach((c: any) =>
-              sections.push(`   - "${String(c.text).replace(/\s+/g, " ").slice(0, 220)}" (${c.likes} likes)`)
+              sections.push(`   - "${c.text}" (${c.likes} likes)`)
             );
           }
           sections.push(``);
@@ -456,7 +623,9 @@ server.tool(
         addSources(topResources.map((r: any) => r.url));
       }
 
-      const responseMarkdown = sections.join("\n");
+      const sanitizedLines = sanitizeReportLines(sections);
+      const responseMarkdown = sanitizedLines.join("\n");
+      validateReportOrThrow(responseMarkdown);
 
       // Format for ChatGPT consumption
       const formattedResult = {
