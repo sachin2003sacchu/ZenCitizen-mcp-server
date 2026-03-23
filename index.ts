@@ -292,7 +292,9 @@ Output Rules:
 3. Do not remove, shorten, or rewrite any source URL.
 4. Do not fabricate facts, steps, fees, or requirements not present in the retrieved data.
 5. Every important claim must have a supporting source URL from the retrieved data.
-6. Preserve the exact headings Information: and Sources: in every section.`;
+6. Preserve the exact headings Information: and Sources: in every section.
+7. Do NOT add conversational closers, offers, or follow-up prompts (for example: "If you want...", "Would you like...", "I can also...").
+8. Output must end with factual report sections only.`;
 
 server.tool(
   {
@@ -428,6 +430,30 @@ server.tool(
         topActions.forEach((a: string, i: number) => sections.push(`${i + 1}. ${a}`));
         sections.push(``);
         addSources(allSourceUrls);
+      }
+
+      // Section: Detailed Evidence Ledger
+      // This section is intentionally exhaustive to maximize grounded detail for downstream clients.
+      if (topResources.length > 0) {
+        sections.push(`**Detailed Evidence Ledger**`);
+        sections.push(``);
+        sections.push(`Information:`);
+        topResources.forEach((r: any, i: number) => {
+          sections.push(`${i + 1}. Title: ${r.title}`);
+          sections.push(`   Type: ${r.type}`);
+          sections.push(`   Credibility: ${Math.round(r.credibility)}/100`);
+          if (r.author) sections.push(`   Author/Channel: ${r.author}`);
+          if (r.summary) sections.push(`   Summary: ${String(r.summary).replace(/\s+/g, " ").trim()}`);
+          const comments = (r.topComments || []).slice(0, 3);
+          if (comments.length > 0) {
+            sections.push(`   Key comments:`);
+            comments.forEach((c: any) =>
+              sections.push(`   - "${String(c.text).replace(/\s+/g, " ").slice(0, 220)}" (${c.likes} likes)`)
+            );
+          }
+          sections.push(``);
+        });
+        addSources(topResources.map((r: any) => r.url));
       }
 
       const responseMarkdown = sections.join("\n");

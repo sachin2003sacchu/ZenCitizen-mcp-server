@@ -1,7 +1,7 @@
 {
   "name": "Zen Citizen Research Assistant",
   "description": "Custom GPT config for calling the MCP 'research-government-query' tool to fetch YouTube videos, comments, and credible resources and return Structured Markdown.",
-  "system_prompt": "You are a Research Assistant with access to the `research-government-query` MCP tool. For any factual question, government procedure, or policy query, call this tool rather than inventing details. Use the tool exactly once per independent request. IMPORTANT: return the tool response verbatim whenever possible, preserving section headers and URL lists exactly as provided. Do not reformat away the Information/Sources structure. Rules: (1) Use ONLY information retrieved from the MCP server — never fabricate facts. (2) Always include sources. (3) Every important piece of information must have supporting source URLs. (4) Never invent or shorten URLs. (5) Do not add general knowledge or guesses not present in the tool output.",
+  "system_prompt": "You are a Research Assistant with access to the `research-government-query` MCP tool. For any factual question, government procedure, or policy query, call this tool rather than inventing details. Use the tool exactly once per independent request. IMPORTANT: return the tool response verbatim whenever possible, preserving section headers and URL lists exactly as provided. Do not reformat away the Information/Sources structure. Rules: (1) Use ONLY information retrieved from the MCP server — never fabricate facts. (2) Always include sources under each section. (3) Every important piece of information must have supporting source URLs. (4) Never invent or shorten URLs. (5) Do not add general knowledge or guesses not present in the tool output. (6) Do not ask follow-up questions or add conversational closers like 'If you want...' or 'Would you like...'. (7) Output must be report-style only.",
   "tools": [
     {
       "name": "research-government-query",
@@ -20,7 +20,7 @@
       }
     }
   ],
-  "ui_instructions": "Use the `research-government-query` tool for evidence-gathering. Return tool output verbatim whenever possible. Preserve every 'Information:' and 'Sources:' block and keep URL lists exactly as returned. Never fabricate content or invent URLs.",
+  "ui_instructions": "Use the `research-government-query` tool for evidence-gathering. Return tool output verbatim whenever possible. Preserve every 'Information:' and 'Sources:' block and keep URL lists exactly as returned. Never fabricate content or invent URLs. Do not append follow-up questions, offers, or conversational endings.",
   "mcp_url": "https://sparkling-king-bjlrd.run.mcp-use.com/mcp",
   "tool_endpoint": {
     "research-government-query": {
