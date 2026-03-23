@@ -11,11 +11,11 @@ import type {
   KeyPoint,
   ResearchQueryResult,
   CredibilityMetrics,
+  GovernmentService,
 } from "./types.js";
 import { classifySentiment, classifyComment, calculateHelpfulnessScore, extractKeyPoints } from "./classifier.js";
-import { findGovernmentService } from "./services-db.js";
 import { enrichGovernmentService } from "./services-fetcher.js";
-import { inferGovernmentLinks, extractGovernmentLinksForQuery } from "./llm.js";
+import { extractGovernmentLinksForQuery } from "./llm.js";
 import type { ScrapedPageInfo } from "./dynamic-scraper.js";
 
 /**
@@ -292,32 +292,17 @@ export async function compileResearchResult(
   // Generate recommended actions
   const recommendedActions = generateRecommendations(query, topKeyPoints, allResources);
 
-  // Find related government service
-  let governmentService = findGovernmentService(query);
+  // Fully dynamic source discovery for EVERY query (no static DB dependency)
+  let governmentService: GovernmentService | undefined;
 
-  // ONLY call LLM if we don't already have a database result
-  // This prevents unnecessary rate limiting
-  const inferred = !governmentService 
-    ? await extractGovernmentLinksForQuery(query).catch((err) => {
-        console.warn("[LLM] Gov link extraction failed:", (err as any)?.message || err);
-        return null;
-      })
-    : null;
+  const inferred = await extractGovernmentLinksForQuery(query).catch((err) => {
+    console.warn("[LLM] Gov link extraction failed:", (err as any)?.message || err);
+    return null;
+  });
 
-  // Enrich DB result if found
-  const enriched = governmentService
-    ? await enrichGovernmentService(governmentService).catch((err) => {
-        console.warn("Failed to enrich government service:", (err as any)?.message || err);
-        return governmentService;
-      })
-    : null;
-
-  if (enriched) governmentService = enriched;
-
-  // If no DB match, use LLM-inferred result
-  if (!governmentService && inferred && inferred.officialLinks.length > 0) {
-    governmentService = {
-      id: "llm-extracted",
+  if (inferred && inferred.officialLinks.length > 0) {
+    const liveService: GovernmentService = {
+      id: "live-extracted",
       name: inferred.serviceName,
       description: inferred.description,
       category: inferred.category,
@@ -332,6 +317,23 @@ export async function compileResearchResult(
       processingTime: extractProcessingTimeFromScraped(inferred.scrapedInfo),
       relatedServices: [],
       state: inferred.state,
+    };
+
+    // Additional live enrichment pass to discover extra form/document links
+    const enriched = await enrichGovernmentService(liveService).catch((err) => {
+      console.warn("Failed to enrich live government service:", (err as any)?.message || err);
+      return liveService;
+    });
+
+    governmentService = {
+      ...liveService,
+      ...enriched,
+      documentLinks: Array.from(
+        new Set([...(liveService.documentLinks || []), ...(enriched?.documentLinks || [])])
+      ),
+      officialLinks: Array.from(
+        new Set([...(liveService.officialLinks || []), ...(enriched?.officialLinks || [])])
+      ),
     };
   }
 

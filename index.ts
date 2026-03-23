@@ -103,7 +103,7 @@ server.tool(
       invoked: "Results loaded",
     },
   },
-  async ({ query }) => {
+  async ({ query }: { query?: string }) => {
     const results = fruits.filter(
       (f) => !query || f.fruit.toLowerCase().includes(query.toLowerCase())
     );
@@ -133,7 +133,7 @@ server.tool(
       facts: z.array(z.string()),
     }),
   },
-  async ({ fruit }) => {
+  async ({ fruit }: { fruit: string }) => {
     const found = fruits.find(
       (f) => f.fruit?.toLowerCase() === fruit?.toLowerCase()
     );
@@ -167,7 +167,7 @@ server.tool(
       invoked: "YouTube results loaded",
     },
   },
-  async ({ query }) => {
+  async ({ query }: { query: string }) => {
     try {
       const results = await searchYouTube(query);
       return widget({
@@ -204,7 +204,7 @@ server.tool(
       invoked: "Twitter results loaded",
     },
   },
-  async ({ query }) => {
+  async ({ query }: { query: string }) => {
     try {
       const results = await searchTwitter(query);
       return widget({
@@ -239,7 +239,7 @@ server.tool(
       invoked: "Results loaded",
     },
   },
-  async ({ query }) => {
+  async ({ query }: { query: string }) => {
     try {
       const { youtube, twitter, errors } = await searchBothPlatforms(query);
       
@@ -303,7 +303,7 @@ server.tool(
       instructions: z.string().default(SOURCE_FORMAT_INSTRUCTIONS).describe("Formatting instructions. Defaults to Information/Sources format: every section has retrieved content followed by real source URLs. Do not override unless needed."),
     }),
   },
-  async ({ query, instructions }) => {
+  async ({ query, instructions }: { query: string; instructions?: string }) => {
     try {
       const effectiveInstructions = instructions || SOURCE_FORMAT_INSTRUCTIONS;
       const result = await researchGovernmentQuery(query, effectiveInstructions);
