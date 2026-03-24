@@ -98,6 +98,114 @@ function dedupeStrings(values: string[]): string[] {
   return result;
 }
 
+function isPolicyIntentQuery(query: string): boolean {
+  return /(policy|act|rule|law|legal|gazette|notification|privacy|retention|compliance)/i.test(query);
+}
+
+function isPolicyOrMetaDocument(url: string): boolean {
+  const lower = url.toLowerCase();
+  return /(policy|privacy|retention|terms|copyright|sitemap|data-sharing|archieval|archive)/.test(lower);
+}
+
+function isApplicationRelevantDocument(url: string): boolean {
+  const lower = url.toLowerCase();
+  return /(form|apply|application|guideline|faq|instruction|permit|license|idp|service|download|dl|rto|parivahan)/.test(lower);
+}
+
+function filterOfficialUrlsForQuery(urls: string[], query: string): string[] {
+  const allowPolicy = isPolicyIntentQuery(query);
+  return Array.from(new Set(urls))
+    .filter(Boolean)
+    .filter((url) => {
+      if (allowPolicy) return true;
+      if (isPolicyOrMetaDocument(url)) return false;
+      return true;
+    });
+}
+
+function filterActionLinksForQuery(
+  links: Array<{ label: string; url: string; purpose: string }>,
+  query: string
+): Array<{ label: string; url: string; purpose: string }> {
+  const allowPolicy = isPolicyIntentQuery(query);
+  const out: Array<{ label: string; url: string; purpose: string }> = [];
+  const seen = new Set<string>();
+
+  for (const link of links) {
+    if (!link?.url) continue;
+    const key = link.url.toLowerCase();
+    if (seen.has(key)) continue;
+
+    if (!allowPolicy && link.purpose === "document") {
+      if (isPolicyOrMetaDocument(link.url)) continue;
+      if (!isApplicationRelevantDocument(link.url)) continue;
+    }
+
+    seen.add(key);
+    out.push(link);
+  }
+
+  return out;
+}
+
+function isLikelyPromotional(text: string): boolean {
+  const lower = normalizeLine(text, 320).toLowerCase();
+  return /(use code|discount|promo|affiliate|apply here|subscribe|dm me|link in bio|whatsapp me|telegram)/.test(lower);
+}
+
+function tokenize(text: string): string[] {
+  return normalizeLine(text, 400)
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .filter((t) => t.length >= 4)
+    .filter((t) => !["this", "that", "with", "from", "your", "have", "will", "need", "apply", "online", "official"].includes(t));
+}
+
+function isCommunityInsightCorroborated(
+  insightText: string,
+  requirements: string[],
+  officialUrls: string[]
+): boolean {
+  const insightTokens = new Set(tokenize(insightText));
+  if (insightTokens.size === 0) return false;
+
+  const officialCorpus = [
+    ...requirements,
+    ...officialUrls,
+  ].join(" ");
+
+  const officialTokens = new Set(tokenize(officialCorpus));
+
+  let matches = 0;
+  insightTokens.forEach((t) => {
+    if (officialTokens.has(t)) matches += 1;
+  });
+
+  return matches >= 2;
+}
+
+function verifyInsightLines(insights: string[], requirements: string[], officialUrls: string[]): string[] {
+  return insights.map((line) => {
+    if (!line.startsWith("Community-reported issue trend:")) return line;
+    const raw = line.replace(/^Community-reported issue trend:\s*/i, "").trim();
+    const verified = isCommunityInsightCorroborated(raw, requirements, officialUrls);
+    if (verified) return `Community-reported issue trend (corroborated): ${raw}`;
+    return `Community-reported issue trend (unverified): ${raw}`;
+  });
+}
+
+function normalizeCredibilityForDisplay(type: string, url: string, score: number): number {
+  const isOfficialHost = /\.gov\.in|\.nic\.in/.test((url || "").toLowerCase());
+  const base = Math.max(0, Math.min(100, Math.round(score || 0)));
+
+  if (type === "official") return isOfficialHost ? Math.max(base, 85) : Math.min(base, 85);
+  if (type === "guide") return isOfficialHost ? Math.min(base, 88) : Math.min(base, 80);
+  if (type === "forum") return Math.min(base, 65);
+  if (type === "tweet") return Math.min(base, 70);
+  if (type === "video") return Math.min(base, 82);
+  return Math.min(base, 75);
+}
+
 type RankedSource = {
   url: string;
   title: string;
@@ -109,27 +217,32 @@ type RankedSource = {
 function rankArticleSource(url: string, title?: string): RankedSource {
   const safeTitle = normalizeLine(title || "Article reference", 140);
   const lower = url.toLowerCase();
-  let rank = 40;
+  let rank = 25;
   const reasons: string[] = [];
 
   if (/\.gov\.in|\.nic\.in/.test(lower)) {
-    rank += 45;
+    rank += 60;
     reasons.push("official domain");
   }
 
   if (/(pib|mygov|egazette|indiacode)/.test(lower)) {
-    rank += 15;
+    rank += 20;
     reasons.push("government publication");
   }
 
-  if (/(circular|notification|guideline|press|release|faq|article|news|scheme)/.test(lower)) {
+  if (/(circular|notification|guideline|press|release|faq|article|news|scheme|instruction|service|form|apply)/.test(lower)) {
     rank += 10;
     reasons.push("policy/help content");
   }
 
   if (/youtube\.com|twitter\.com|x\.com/.test(lower)) {
-    rank -= 30;
+    rank -= 45;
     reasons.push("community platform");
+  }
+
+  if (isPolicyOrMetaDocument(lower)) {
+    rank -= 20;
+    reasons.push("non-application policy/meta page");
   }
 
   const clipped = Math.max(0, Math.min(100, rank));
@@ -160,7 +273,7 @@ function extractRankedArticles(input: {
 
   for (const url of input.officialSourceUrls) {
     if (!url) continue;
-    if (!/(news|article|press|release|faq|notification|circular|guideline|scheme|overview)/i.test(url)) {
+    if (!/(news|article|press|release|faq|notification|circular|guideline|scheme|overview|instruction|service|form|apply|permit|license|idp)/i.test(url)) {
       continue;
     }
     candidates.push(rankArticleSource(url, "Official article or notice"));
@@ -175,9 +288,17 @@ function extractRankedArticles(input: {
     }
   }
 
-  return Array.from(deduped.values())
+  const ranked = Array.from(deduped.values())
     .sort((a, b) => b.rank - a.rank)
     .slice(0, 6);
+
+  if (ranked.length > 0) return ranked;
+
+  // Fallback: include top official pages as contextual references instead of returning empty.
+  return input.officialSourceUrls
+    .filter((url) => isApplicationRelevantDocument(url))
+    .slice(0, 3)
+    .map((url) => rankArticleSource(url, "Official guidance reference"));
 }
 
 function buildUserFriendlyInsights(
@@ -194,6 +315,7 @@ function buildUserFriendlyInsights(
     .map((kp) => normalizeLine(kp.text))
     .filter((line) => line.length > 20 && line.length < 200)
     .filter((line) => !isLikelyNoisyComment(line))
+    .filter((line) => !isLikelyPromotional(line))
     .filter((line) => !/\?\s*$/.test(line))
     .slice(0, 4)
     .map((line) => `Community-reported issue trend: ${line}`);
@@ -587,12 +709,13 @@ server.tool(
     try {
       const effectiveInstructions = instructions || SOURCE_FORMAT_INSTRUCTIONS;
       const result = await researchGovernmentQuery(query, effectiveInstructions);
-      const actionLinks = buildActionLinks(result.governmentService as any);
+      const rawActionLinks = buildActionLinks(result.governmentService as any);
+      const actionLinks = filterActionLinksForQuery(rawActionLinks, query);
       const topResources = result.resources.slice(0, 10).map((r: any) => ({
         title: r.title,
         url: r.url,
         type: r.type,
-        credibility: r.credibility.overall,
+        credibility: normalizeCredibilityForDisplay(r.type, r.url, r.credibility?.overall),
         author: r.metadata?.author || undefined,
         summary: r.metadata?.summary || undefined,
         topComments: (r.opinions || []).slice(0, 4).map((o: any) => ({
@@ -624,13 +747,13 @@ server.tool(
         ``,
       ];
 
-      const officialSourceUrls = Array.from(
+      const officialSourceUrls = filterOfficialUrlsForQuery(Array.from(
         new Set([
           ...(result.governmentService?.officialLinks || []),
           ...(result.governmentService?.documentLinks || []),
           ...actionLinks.map((a: any) => a.url),
         ])
-      );
+      ), query);
 
       const userFriendlyInsights = buildUserFriendlyInsights(
         topKeyPoints,
@@ -660,7 +783,12 @@ server.tool(
         hasTweets: topTweets.length > 0,
       });
 
-      const finalInsights = userFriendlyInsights.length > 0 ? userFriendlyInsights : fallbackInsights;
+      const insightCandidates = userFriendlyInsights.length > 0 ? userFriendlyInsights : fallbackInsights;
+      const finalInsights = verifyInsightLines(
+        insightCandidates,
+        result.governmentService?.requirements || [],
+        officialSourceUrls
+      );
 
       const fallbackNextSteps = buildFallbackNextSteps({
         actionLinks,
@@ -762,7 +890,7 @@ server.tool(
           const comments = (v.topComments || [])
             .filter((c: any) => c?.label === "information")
             .map((c: any) => ({ ...c, text: normalizeLine(String(c.text), 160) }))
-            .filter((c: any) => c.text && !isLikelyNoisyComment(c.text))
+            .filter((c: any) => c.text && !isLikelyNoisyComment(c.text) && !isLikelyPromotional(c.text))
             .slice(0, 2);
           comments.forEach((c: any) => sections.push(`   - "${c.text}" (${c.likes} likes)`));
         });
@@ -813,7 +941,7 @@ server.tool(
           const comments = (r.topComments || [])
             .filter((c: any) => c?.label === "information")
             .map((c: any) => ({ ...c, text: normalizeLine(String(c.text), 220) }))
-            .filter((c: any) => c.text && !isLikelyNoisyComment(c.text))
+            .filter((c: any) => c.text && !isLikelyNoisyComment(c.text) && !isLikelyPromotional(c.text))
             .slice(0, 3);
           if (comments.length > 0) {
             sections.push(`   Key comments:`);
