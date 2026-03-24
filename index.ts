@@ -488,7 +488,7 @@ Output Rules:
 6. Preserve the exact headings Information: and Sources: in every section.
 7. Do NOT add conversational closers, offers, or follow-up prompts (for example: "If you want...", "Would you like...", "I can also...").
 8. Do NOT include tool-trace or meta lines (for example: "Called tool", "I am checking...").
-9. Output must always include a "Related YouTube Videos" section. If no videos are retrieved, explicitly say none were retrieved from current context.
+9. Output must always include a "Related YouTube Videos" section and list direct YouTube URLs in Information and Sources.
 10. Output must end with factual report sections only.`;
 
 server.tool(
@@ -653,6 +653,7 @@ server.tool(
       if (topVideos.length > 0) {
         topVideos.forEach((v: any, i: number) => {
           sections.push(`${i + 1}. ${v.title}`);
+          sections.push(`   - Video link: ${v.url}`);
           const comments = (v.topComments || [])
             .filter((c: any) => c?.label === "information")
             .map((c: any) => ({ ...c, text: normalizeLine(String(c.text), 160) }))

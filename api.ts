@@ -34,29 +34,52 @@ export async function searchYouTube(query: string): Promise<YouTubeResults> {
   }
 
   try {
-    // Search for videos - India specific
-    const searchResponse = await axios.get("https://www.googleapis.com/youtube/v3/search", {
-      params: {
-        q: query,
-        key: apiKey,
-        part: "snippet",
-        type: "video",
-        maxResults: 5,
-        relevanceLanguage: "en",
-        regionCode: "IN", // India specific
-        relevantLanguage: "en,hi", // English and Hindi
-      },
-    });
+    const queryVariants = [
+      query,
+      `${query} india official process`,
+      `${query} duplicate certificate apply online`,
+    ];
 
-    const videos: YouTubeVideo[] = searchResponse.data.items.map((item: any) => ({
-      id: item.id.videoId,
-      title: item.snippet.title,
-      description: item.snippet.description,
-      thumbnail: item.snippet.thumbnails?.medium?.url || "",
-      channelTitle: item.snippet.channelTitle,
-      publishedAt: item.snippet.publishedAt,
-      url: `https://www.youtube.com/watch?v=${item.id.videoId}`,
-    }));
+    const videosMap = new Map<string, YouTubeVideo>();
+
+    for (const variant of queryVariants) {
+      if (videosMap.size >= 5) break;
+
+      // Search for videos - India specific
+      const searchResponse = await axios.get("https://www.googleapis.com/youtube/v3/search", {
+        params: {
+          q: variant,
+          key: apiKey,
+          part: "snippet",
+          type: "video",
+          maxResults: 5,
+          relevanceLanguage: "en",
+          regionCode: "IN", // India specific
+          relevantLanguage: "en,hi", // English and Hindi
+        },
+      });
+
+      const variantVideos: YouTubeVideo[] = (searchResponse.data.items || [])
+        .filter((item: any) => item?.id?.videoId)
+        .map((item: any) => ({
+          id: item.id.videoId,
+          title: item.snippet.title,
+          description: item.snippet.description,
+          thumbnail: item.snippet.thumbnails?.medium?.url || "",
+          channelTitle: item.snippet.channelTitle,
+          publishedAt: item.snippet.publishedAt,
+          url: `https://www.youtube.com/watch?v=${item.id.videoId}`,
+        }));
+
+      for (const video of variantVideos) {
+        if (!videosMap.has(video.id)) {
+          videosMap.set(video.id, video);
+        }
+        if (videosMap.size >= 5) break;
+      }
+    }
+
+    const videos = Array.from(videosMap.values()).slice(0, 5);
 
     // Fetch comments for each video (top 3 comments per video), build commentsByVideo map and aggregated comments list
     const commentsByVideo: Record<string, YouTubeComment[]> = {};
