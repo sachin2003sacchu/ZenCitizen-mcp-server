@@ -98,6 +98,88 @@ function dedupeStrings(values: string[]): string[] {
   return result;
 }
 
+type RankedSource = {
+  url: string;
+  title: string;
+  rank: number;
+  tier: "tier-1" | "tier-2" | "tier-3";
+  rationale: string;
+};
+
+function rankArticleSource(url: string, title?: string): RankedSource {
+  const safeTitle = normalizeLine(title || "Article reference", 140);
+  const lower = url.toLowerCase();
+  let rank = 40;
+  const reasons: string[] = [];
+
+  if (/\.gov\.in|\.nic\.in/.test(lower)) {
+    rank += 45;
+    reasons.push("official domain");
+  }
+
+  if (/(pib|mygov|egazette|indiacode)/.test(lower)) {
+    rank += 15;
+    reasons.push("government publication");
+  }
+
+  if (/(circular|notification|guideline|press|release|faq|article|news|scheme)/.test(lower)) {
+    rank += 10;
+    reasons.push("policy/help content");
+  }
+
+  if (/youtube\.com|twitter\.com|x\.com/.test(lower)) {
+    rank -= 30;
+    reasons.push("community platform");
+  }
+
+  const clipped = Math.max(0, Math.min(100, rank));
+  let tier: RankedSource["tier"] = "tier-3";
+  if (clipped >= 85) tier = "tier-1";
+  else if (clipped >= 65) tier = "tier-2";
+
+  return {
+    url,
+    title: safeTitle,
+    rank: clipped,
+    tier,
+    rationale: reasons.length > 0 ? reasons.join(", ") : "limited source signals",
+  };
+}
+
+function extractRankedArticles(input: {
+  topResources: Array<{ type: string; url: string; title: string }>;
+  officialSourceUrls: string[];
+}): RankedSource[] {
+  const candidates: RankedSource[] = [];
+
+  for (const resource of input.topResources) {
+    if (!["guide", "forum", "official"].includes(resource.type)) continue;
+    if (!resource.url) continue;
+    candidates.push(rankArticleSource(resource.url, resource.title));
+  }
+
+  for (const url of input.officialSourceUrls) {
+    if (!url) continue;
+    if (!/(news|article|press|release|faq|notification|circular|guideline|scheme|overview)/i.test(url)) {
+      continue;
+    }
+    candidates.push(rankArticleSource(url, "Official article or notice"));
+  }
+
+  const deduped = new Map<string, RankedSource>();
+  for (const entry of candidates) {
+    const key = entry.url.toLowerCase();
+    const existing = deduped.get(key);
+    if (!existing || entry.rank > existing.rank) {
+      deduped.set(key, entry);
+    }
+  }
+
+  return Array.from(deduped.values())
+    .sort((a, b) => b.rank - a.rank)
+    .slice(0, 6);
+}
+
 function buildUserFriendlyInsights(
   keyPoints: Array<{ text: string }>,
   requirements: string[]
@@ -489,7 +571,8 @@ Output Rules:
 7. Do NOT add conversational closers, offers, or follow-up prompts (for example: "If you want...", "Would you like...", "I can also...").
 8. Do NOT include tool-trace or meta lines (for example: "Called tool", "I am checking...").
 9. Output must always include a "Related YouTube Videos" section and list direct YouTube URLs in Information and Sources.
-10. Output must end with factual report sections only.`;
+10. Add "Related Articles (Context Only)" after Official Links with trust ranking (Tier 1 highest).
+11. Output must end with factual report sections only.`;
 
 server.tool(
   {
@@ -553,6 +636,11 @@ server.tool(
         topKeyPoints,
         result.governmentService?.requirements || []
       );
+
+      const rankedArticles = extractRankedArticles({
+        topResources,
+        officialSourceUrls,
+      });
 
       const userFriendlyNextSteps = buildUserFriendlyNextSteps({
         actionLinks,
@@ -645,6 +733,23 @@ server.tool(
         sections.push(``);
         addSources(officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls);
       }
+
+      // Section: Ranked Articles (placed after official links)
+      sections.push(`**Related Articles (Context Only)**`);
+      sections.push(``);
+      sections.push(`Information:`);
+      if (rankedArticles.length > 0) {
+        rankedArticles.forEach((article, i) => {
+          sections.push(
+            `${i + 1}. ${article.title} | Trust Rank: ${article.rank}/100 (${article.tier.toUpperCase()}) | Reason: ${article.rationale}`
+          );
+          sections.push(`   - Article link: ${article.url}`);
+        });
+      } else {
+        sections.push(`- No article-style references were retrieved for this query in the current context.`);
+      }
+      sections.push(``);
+      addSources(rankedArticles.map((a) => a.url));
 
       // Section: YouTube Videos (always present)
       sections.push(`**Related YouTube Videos**`);
