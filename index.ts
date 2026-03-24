@@ -50,6 +50,8 @@ const BANNED_OUTPUT_PATTERNS = [
   /\bif you want\b/i,
   /\bwould you like\b/i,
   /\bi can also\b/i,
+  /\bif you tell me\b/i,
+  /\bsince .* i\s*'?ll explain\b/i,
   /\bi\s*'?m checking\b/i,
   /\bcalled tool\b/i,
   /\bcan help you with\b/i,
@@ -221,6 +223,7 @@ function validateReportOrThrow(reportMarkdown: string): void {
   const requiredSections = [
     "**About This Service",
     "**Official Links**",
+    "**Related YouTube Videos**",
     "**Key Insights**",
     "**Recommended Next Steps**",
   ];
@@ -484,7 +487,9 @@ Output Rules:
 5. Every important claim must have a supporting source URL from the retrieved data.
 6. Preserve the exact headings Information: and Sources: in every section.
 7. Do NOT add conversational closers, offers, or follow-up prompts (for example: "If you want...", "Would you like...", "I can also...").
-8. Output must end with factual report sections only.`;
+8. Do NOT include tool-trace or meta lines (for example: "Called tool", "I am checking...").
+9. Output must always include a "Related YouTube Videos" section. If no videos are retrieved, explicitly say none were retrieved from current context.
+10. Output must end with factual report sections only.`;
 
 server.tool(
   {
@@ -641,11 +646,11 @@ server.tool(
         addSources(officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls);
       }
 
-      // Section: YouTube Videos
+      // Section: YouTube Videos (always present)
+      sections.push(`**Related YouTube Videos**`);
+      sections.push(``);
+      sections.push(`Information:`);
       if (topVideos.length > 0) {
-        sections.push(`**Related YouTube Videos**`);
-        sections.push(``);
-        sections.push(`Information:`);
         topVideos.forEach((v: any, i: number) => {
           sections.push(`${i + 1}. ${v.title}`);
           const comments = (v.topComments || [])
@@ -655,9 +660,11 @@ server.tool(
             .slice(0, 2);
           comments.forEach((c: any) => sections.push(`   - "${c.text}" (${c.likes} likes)`));
         });
-        sections.push(``);
-        addSources(topVideos.map((v: any) => v.url));
+      } else {
+        sections.push(`- No related YouTube videos were retrieved from the current context for this query.`);
       }
+      sections.push(``);
+      addSources(topVideos.map((v: any) => v.url));
 
       // Section: Twitter/X
       if (topTweets.length > 0) {
