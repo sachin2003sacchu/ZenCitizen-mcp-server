@@ -1101,7 +1101,8 @@ Output Rules:
 8. Do NOT include tool-trace or meta lines (for example: "Called tool", "I am checking...").
 9. Output must always include a "Related YouTube Videos" section and list direct YouTube URLs in Information and Sources.
 10. Add "Related Articles (Context Only)" after Official Links with trust ranking (Tier 1 highest), prioritizing major news domains (Hindustan Times, The Hindu, Times of India, Deccan Herald, and Kannada newspapers).
-11. Output must end with factual report sections only.`;
+11. At the end of the output, add links-only sections: "Articles Related — <query>" and "YouTube Related — <query>". In those two sections, list only live URLs in Information and Sources (no summaries).
+12. Output must end with factual report sections only.`;
 
 server.tool(
   {
@@ -1156,6 +1157,7 @@ server.tool(
         `> NOTE: All content below is sourced exclusively from the MCP server context. Do not add, invent, or replace any information or URLs.`,
         ``,
       ];
+      const queryLabel = normalizeLine(query, 120);
 
       const officialSourceUrls = filterOfficialUrlsForQuery(Array.from(
         new Set([
@@ -1400,6 +1402,32 @@ server.tool(
         });
         addSources(topResources.map((r: any) => r.url));
       }
+
+      // Section: Links-only articles for downstream chat clients
+      sections.push(`**Articles Related — ${queryLabel}**`);
+      sections.push(``);
+      sections.push(`Information:`);
+      const articleOnlyLinks = Array.from(new Set(rankedArticles.map((a) => a.url).filter(Boolean))).slice(0, 8);
+      if (articleOnlyLinks.length > 0) {
+        articleOnlyLinks.forEach((url, i) => sections.push(`${i + 1}. ${url}`));
+      } else {
+        sections.push(`- No article links were retrieved for this query.`);
+      }
+      sections.push(``);
+      addSources(articleOnlyLinks);
+
+      // Section: Links-only videos for downstream chat clients
+      sections.push(`**YouTube Related — ${queryLabel}**`);
+      sections.push(``);
+      sections.push(`Information:`);
+      const youtubeOnlyLinks = Array.from(new Set(topVideos.map((v: any) => v.url).filter(Boolean))).slice(0, 8);
+      if (youtubeOnlyLinks.length > 0) {
+        youtubeOnlyLinks.forEach((url, i) => sections.push(`${i + 1}. ${url}`));
+      } else {
+        sections.push(`- No YouTube links were retrieved for this query.`);
+      }
+      sections.push(``);
+      addSources(youtubeOnlyLinks);
 
       const sanitizedLines = sanitizeReportLines(sections);
       const responseMarkdown = sanitizedLines.join("\n");
