@@ -399,6 +399,62 @@ function extractUrlsFromText(raw: string): string[] {
     .filter(Boolean);
 }
 
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function extractSearchResultUrls(html: string): string[] {
+  const urls = new Set<string>();
+
+  const decodedHtml = decodeHtmlEntities(html);
+
+  // DuckDuckGo result redirects commonly use /l/?...&uddg=<encoded target>
+  const uddgMatches = decodedHtml.match(/uddg=([^&"'\s>]+)/g) || [];
+  for (const match of uddgMatches) {
+    const encoded = match.replace(/^uddg=/, "").trim();
+    if (!encoded) continue;
+    try {
+      const decoded = decodeURIComponent(encoded);
+      if (decoded.startsWith("http")) urls.add(decoded);
+    } catch {
+      // ignore malformed encodings
+    }
+  }
+
+  // Also parse any direct href values.
+  const hrefMatches = decodedHtml.match(/href=["']([^"']+)["']/gi) || [];
+  for (const attr of hrefMatches) {
+    const href = attr.replace(/^href=["']/i, "").replace(/["']$/g, "").trim();
+    if (!href) continue;
+    const resolved = decodeDuckDuckGoUrl(href);
+    if (resolved.startsWith("http")) urls.add(resolved);
+  }
+
+  // Fallback to generic absolute URL extraction from HTML.
+  extractUrlsFromText(decodedHtml).forEach((u) => urls.add(decodeDuckDuckGoUrl(u)));
+
+  return Array.from(urls).filter((u) => u.startsWith("http"));
+}
+
+function extractGoogleNewsRssUrls(xml: string): string[] {
+  const urls = new Set<string>();
+  const matches = xml.match(/<link>(https?:\/\/[^<]+)<\/link>/gi) || [];
+
+  for (const m of matches) {
+    const link = m.replace(/^<link>/i, "").replace(/<\/link>$/i, "").trim();
+    if (!link) continue;
+    if (/news\.google\.com/.test(link)) continue;
+    urls.add(link);
+  }
+
+  return Array.from(urls);
+}
+
 function decodeDuckDuckGoUrl(url: string): string {
   if (!url) return "";
 
@@ -431,9 +487,7 @@ async function fetchArticlesFromWeb(query: string): Promise<RankedSource[]> {
       if (!response.ok) continue;
 
       const html = await response.text();
-      const rawUrls = extractUrlsFromText(html)
-        .map((u) => decodeDuckDuckGoUrl(u))
-        .filter((u) => u.startsWith("http"));
+      const rawUrls = extractSearchResultUrls(html);
 
       for (const candidateUrl of rawUrls) {
         const lower = candidateUrl.toLowerCase();
@@ -450,6 +504,38 @@ async function fetchArticlesFromWeb(query: string): Promise<RankedSource[]> {
     } catch {
       // Keep best-effort behavior. No throw: article block should degrade gracefully.
     }
+  }
+
+  // Secondary source: Google News RSS for article-style links.
+  try {
+    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(
+      `${query} (international driving permit OR idp) (india OR karnataka)`
+    )}&hl=en-IN&gl=IN&ceid=IN:en`;
+    const rssResp = await fetch(rssUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+      },
+    });
+
+    if (rssResp.ok) {
+      const rssText = await rssResp.text();
+      const rssUrls = extractGoogleNewsRssUrls(rssText);
+
+      for (const candidateUrl of rssUrls) {
+        const lower = candidateUrl.toLowerCase();
+        if (/(youtube\.com|twitter\.com|x\.com|news\.google\.com)/.test(lower)) continue;
+        if (!isPreferredNewsDomain(candidateUrl) && !isLikelyArticlePage(candidateUrl)) continue;
+
+        const ranked = rankArticleSource(candidateUrl, "News article reference");
+        const key = ranked.url.toLowerCase();
+        const existing = collected.get(key);
+        if (!existing || ranked.rank > existing.rank) {
+          collected.set(key, ranked);
+        }
+      }
+    }
+  } catch {
+    // Keep best-effort behavior. No throw: article block should degrade gracefully.
   }
 
   return Array.from(collected.values())
