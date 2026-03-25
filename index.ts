@@ -77,6 +77,7 @@ function isLikelyNoisyComment(text: string): boolean {
   if (/\b(mam|sir|bro|bhai|tnq|pls|ple|frad)\b/i.test(lower) && cleaned.length < 60) return true;
   if ((cleaned.match(/[!?]/g) || []).length >= 3) return true;
   if (/^is\s+this\s+still\s+valid\??$/i.test(lower)) return true;
+  if (/\b(crush|voice tone|subscribe|follow me|love you|first comment)\b/i.test(lower)) return true;
 
   return false;
 }
@@ -204,6 +205,33 @@ function tokenize(text: string): string[] {
     .filter((t) => !["this", "that", "with", "from", "your", "have", "will", "need", "apply", "online", "official"].includes(t));
 }
 
+function buildQueryTerms(query: string): string[] {
+  const base = new Set(tokenize(query));
+  const lower = query.toLowerCase();
+
+  if (/(international\s+driving\s+permit|\bidp\b|driving\s+licen[cs]e|rto|parivahan)/.test(lower)) {
+    ["international", "driving", "permit", "idp", "license", "licence", "parivahan", "rto"].forEach((t) => base.add(t));
+  }
+
+  if (/(passport|visa|medical|application|form|document|renew|validity)/.test(lower)) {
+    ["passport", "visa", "medical", "application", "form", "document", "renewal", "validity"].forEach((t) => base.add(t));
+  }
+
+  return Array.from(base);
+}
+
+function hasQuerySignal(text: string, query: string): boolean {
+  const line = normalizeLine(text, 320).toLowerCase();
+  if (!line) return false;
+  const terms = buildQueryTerms(query);
+  return terms.some((t) => line.includes(t));
+}
+
+function hasGovernmentProcessSignal(text: string): boolean {
+  const line = normalizeLine(text, 320).toLowerCase();
+  return /(permit|license|licence|application|apply|form|document|guideline|validity|rto|parivahan|passport|visa|medical|renew)/.test(line);
+}
+
 function isCommunityInsightCorroborated(
   insightText: string,
   requirements: string[],
@@ -291,11 +319,41 @@ function isLikelyArticlePage(url: string): boolean {
   return articleSignals && !nonArticleSignals;
 }
 
-function rankArticleSource(url: string, title?: string): RankedSource {
+function isLikelyArticleLandingPage(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname.toLowerCase().replace(/\/+$/g, "") || "/";
+    if (path === "/") return true;
+    if (/^\/(news|latest|india|world|sport|sports|business|opinion|karnataka|national)$/.test(path)) return true;
+    if (/^\/(topics?|tag|tags|category|categories)\b/.test(path)) return true;
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function scoreArticleRelevance(url: string, title: string, query: string): number {
+  const terms = buildQueryTerms(query);
+  if (terms.length === 0) return 0;
+  const corpus = `${url} ${title}`.toLowerCase();
+  return terms.reduce((count, t) => count + (corpus.includes(t) ? 1 : 0), 0);
+}
+
+function isStrictArticleCandidate(url: string, title: string, query: string): boolean {
+  if (!url) return false;
+  const lower = url.toLowerCase();
+  if (/(youtube\.com|twitter\.com|x\.com|news\.google\.com|duckduckgo\.com)/.test(lower)) return false;
+  if (isLikelyArticleLandingPage(url)) return false;
+  if (!isPreferredNewsDomain(url) && !isLikelyArticlePage(url)) return false;
+  return scoreArticleRelevance(url, title, query) >= 1;
+}
+
+function rankArticleSource(url: string, title?: string, query = ""): RankedSource {
   const safeTitle = normalizeLine(title || "Article reference", 140);
   const lower = url.toLowerCase();
   let rank = 25;
   const reasons: string[] = [];
+  const relevanceHits = scoreArticleRelevance(url, safeTitle, query);
 
   if (isPreferredNewsDomain(url)) {
     rank += 55;
@@ -322,6 +380,22 @@ function rankArticleSource(url: string, title?: string): RankedSource {
     reasons.push("article-like page");
   }
 
+  if (isLikelyArticleLandingPage(url)) {
+    rank -= 45;
+    reasons.push("generic landing/index page");
+  }
+
+  if (relevanceHits >= 2) {
+    rank += 20;
+    reasons.push("query-relevant article");
+  } else if (relevanceHits === 1) {
+    rank += 8;
+    reasons.push("partial query relevance");
+  } else {
+    rank -= 35;
+    reasons.push("low query relevance");
+  }
+
   if (/youtube\.com|twitter\.com|x\.com/.test(lower)) {
     rank -= 45;
     reasons.push("community platform");
@@ -336,6 +410,9 @@ function rankArticleSource(url: string, title?: string): RankedSource {
     rank -= 15;
     reasons.push("weak article signals");
   }
+
+  if (relevanceHits === 0) rank = Math.min(rank, 70);
+  if (relevanceHits === 1) rank = Math.min(rank, 85);
 
   const clipped = Math.max(0, Math.min(100, rank));
   let tier: RankedSource["tier"] = "tier-3";
@@ -354,6 +431,7 @@ function rankArticleSource(url: string, title?: string): RankedSource {
 function extractRankedArticles(input: {
   topResources: Array<{ type: string; url: string; title: string }>;
   officialSourceUrls: string[];
+  query: string;
 }): RankedSource[] {
   const candidates: RankedSource[] = [];
 
@@ -361,16 +439,16 @@ function extractRankedArticles(input: {
     // Prefer article-like resources and trusted news domains.
     if (!["guide", "forum", "official", "tweet"].includes(resource.type)) continue;
     if (!resource.url) continue;
-    if (!isPreferredNewsDomain(resource.url) && !isLikelyArticlePage(resource.url)) continue;
-    candidates.push(rankArticleSource(resource.url, resource.title));
+    if (!isStrictArticleCandidate(resource.url, resource.title || "", input.query)) continue;
+    candidates.push(rankArticleSource(resource.url, resource.title, input.query));
   }
 
   for (const url of input.officialSourceUrls) {
     if (!url) continue;
-    if (!isLikelyArticlePage(url)) {
+    if (!isStrictArticleCandidate(url, "Official article or notice", input.query)) {
       continue;
     }
-    candidates.push(rankArticleSource(url, "Official article or notice"));
+    candidates.push(rankArticleSource(url, "Official article or notice", input.query));
   }
 
   const deduped = new Map<string, RankedSource>();
@@ -471,7 +549,7 @@ function decodeDuckDuckGoUrl(url: string): string {
 async function fetchArticlesFromWeb(query: string): Promise<RankedSource[]> {
   const searchQueries = [
     `${query} site:hindustantimes.com OR site:thehindu.com OR site:timesofindia.indiatimes.com OR site:deccanherald.com OR site:prajavani.net OR site:vijaykarnataka.com OR site:kannadaprabha.com OR site:udayavani.com`,
-    `${query} Karnataka news`,
+    `${query} explained rules validity apply process`,
   ];
 
   const collected = new Map<string, RankedSource>();
@@ -490,11 +568,9 @@ async function fetchArticlesFromWeb(query: string): Promise<RankedSource[]> {
       const rawUrls = extractSearchResultUrls(html);
 
       for (const candidateUrl of rawUrls) {
-        const lower = candidateUrl.toLowerCase();
-        if (/(youtube\.com|twitter\.com|x\.com|duckduckgo\.com)/.test(lower)) continue;
-        if (!isPreferredNewsDomain(candidateUrl) && !isLikelyArticlePage(candidateUrl)) continue;
+        if (!isStrictArticleCandidate(candidateUrl, "News article reference", query)) continue;
 
-        const ranked = rankArticleSource(candidateUrl, "News article reference");
+        const ranked = rankArticleSource(candidateUrl, "News article reference", query);
         const key = ranked.url.toLowerCase();
         const existing = collected.get(key);
         if (!existing || ranked.rank > existing.rank) {
@@ -522,11 +598,9 @@ async function fetchArticlesFromWeb(query: string): Promise<RankedSource[]> {
       const rssUrls = extractGoogleNewsRssUrls(rssText);
 
       for (const candidateUrl of rssUrls) {
-        const lower = candidateUrl.toLowerCase();
-        if (/(youtube\.com|twitter\.com|x\.com|news\.google\.com)/.test(lower)) continue;
-        if (!isPreferredNewsDomain(candidateUrl) && !isLikelyArticlePage(candidateUrl)) continue;
+        if (!isStrictArticleCandidate(candidateUrl, "News article reference", query)) continue;
 
-        const ranked = rankArticleSource(candidateUrl, "News article reference");
+        const ranked = rankArticleSource(candidateUrl, "News article reference", query);
         const key = ranked.url.toLowerCase();
         const existing = collected.get(key);
         if (!existing || ranked.rank > existing.rank) {
@@ -561,7 +635,8 @@ function mergeRankedArticles(primary: RankedSource[], secondary: RankedSource[])
 
 function buildUserFriendlyInsights(
   keyPoints: Array<{ text: string }>,
-  requirements: string[]
+  requirements: string[],
+  query: string
 ): string[] {
   const fromRequirements = requirements
     .map((item) => normalizeLine(item))
@@ -574,6 +649,7 @@ function buildUserFriendlyInsights(
     .filter((line) => line.length > 20 && line.length < 200)
     .filter((line) => !isLikelyNoisyComment(line))
     .filter((line) => !isLikelyPromotional(line))
+    .filter((line) => hasGovernmentProcessSignal(line) || hasQuerySignal(line, query))
     .filter((line) => !/\?\s*$/.test(line))
     .slice(0, 4)
     .map((line) => `Community-reported issue trend: ${line}`);
@@ -720,6 +796,7 @@ function validateReportOrThrow(
 ): void {
   const requiredSectionPrefixes = [
     "**About This Service",
+    "**Requirements & Process**",
     "**Official Links**",
     "**Related Articles (Context Only)**",
     "**Related YouTube Videos**",
@@ -1091,12 +1168,14 @@ server.tool(
 
       const userFriendlyInsights = buildUserFriendlyInsights(
         topKeyPoints,
-        result.governmentService?.requirements || []
+        result.governmentService?.requirements || [],
+        query
       );
 
       const rankedArticlesFromContext = extractRankedArticles({
         topResources,
         officialSourceUrls,
+        query,
       });
       const rankedArticlesFromWeb = await fetchArticlesFromWeb(query);
       const rankedArticles = mergeRankedArticles(rankedArticlesFromContext, rankedArticlesFromWeb);
@@ -1178,6 +1257,20 @@ server.tool(
           .filter((url) => isApplicationRelevantDocument(url) && !isPolicyOrMetaDocument(url))
           .slice(0, 6);
         addSources(reqLinks.length > 0 ? reqLinks : processSpecificOfficialUrls);
+      } else {
+        sections.push(`**Requirements & Process**`);
+        sections.push(``);
+        sections.push(`Information:`);
+        sections.push(`- Requirements were not explicitly enumerated in retrieved service metadata.`);
+        const reqLinks = processSpecificOfficialUrls
+          .filter((url) => isApplicationRelevantDocument(url) && !isPolicyOrMetaDocument(url))
+          .slice(0, 4);
+        if (reqLinks.length > 0) {
+          sections.push(`- Review these official form/process pages before application:`);
+          reqLinks.forEach((url) => sections.push(`  - ${url}`));
+        }
+        sections.push(``);
+        addSources(reqLinks.length > 0 ? reqLinks : (processSpecificOfficialUrls.length > 0 ? processSpecificOfficialUrls : officialSourceUrls));
       }
 
       // Section: Official Action Links
@@ -1235,6 +1328,7 @@ server.tool(
             .filter((c: any) => c?.label === "information")
             .map((c: any) => ({ ...c, text: normalizeLine(String(c.text), 160) }))
             .filter((c: any) => c.text && !isLikelyNoisyComment(c.text) && !isLikelyPromotional(c.text))
+            .filter((c: any) => hasGovernmentProcessSignal(c.text) || hasQuerySignal(c.text, query))
             .slice(0, 2);
           comments.forEach((c: any) => sections.push(`   - "${c.text}" (${c.likes} likes)`));
         });
@@ -1286,7 +1380,7 @@ server.tool(
           if (r.author) sections.push(`   Author/Channel: ${r.author}`);
           if (r.summary) {
             const cleanedSummary = String(r.summary).replace(/\s+/g, " ").trim();
-            if (!isLikelyPromotional(cleanedSummary)) {
+            if (!isLikelyPromotional(cleanedSummary) && !isLikelyNoisyComment(cleanedSummary) && (hasGovernmentProcessSignal(cleanedSummary) || hasQuerySignal(cleanedSummary, query))) {
               sections.push(`   Summary: ${cleanedSummary}`);
             }
           }
@@ -1294,6 +1388,7 @@ server.tool(
             .filter((c: any) => c?.label === "information")
             .map((c: any) => ({ ...c, text: normalizeLine(String(c.text), 220) }))
             .filter((c: any) => c.text && !isLikelyNoisyComment(c.text) && !isLikelyPromotional(c.text))
+            .filter((c: any) => hasGovernmentProcessSignal(c.text) || hasQuerySignal(c.text, query))
             .slice(0, 3);
           if (comments.length > 0) {
             sections.push(`   Key comments:`);
