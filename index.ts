@@ -57,6 +57,9 @@ const BANNED_OUTPUT_PATTERNS = [
   /\bcan help you with\b/i,
 ];
 
+const REPORT_START = "REPORT_START";
+const REPORT_END = "REPORT_END";
+
 function normalizeLine(text: string, maxLength = 220): string {
   const compact = String(text || "")
     .replace(/\s+/g, " ")
@@ -423,18 +426,90 @@ function sanitizeReportLines(lines: string[]): string[] {
     .filter((line) => !isDisallowedOutputLine(line));
 }
 
-function validateReportOrThrow(reportMarkdown: string): void {
-  const requiredSections = [
+function splitReportSections(reportMarkdown: string): Array<{ heading: string; body: string }> {
+  const lines = reportMarkdown.split("\n");
+  const sections: Array<{ heading: string; body: string }> = [];
+  let currentHeading = "";
+  let currentBody: string[] = [];
+
+  const flush = () => {
+    if (!currentHeading) return;
+    sections.push({ heading: currentHeading, body: currentBody.join("\n") });
+  };
+
+  for (const line of lines) {
+    if (/^\*\*.+\*\*$/.test(line.trim())) {
+      flush();
+      currentHeading = line.trim();
+      currentBody = [];
+      continue;
+    }
+    if (currentHeading) currentBody.push(line);
+  }
+
+  flush();
+  return sections;
+}
+
+function extractSourceUrlsFromSectionBody(body: string): string[] {
+  const sourceSplit = body.split(/(?:^|\n)Sources:\s*\n/i);
+  if (sourceSplit.length < 2) return [];
+  const sourceBlock = sourceSplit.slice(1).join("\n");
+  const matches = sourceBlock.match(/https?:\/\/[^\s)]+/g) || [];
+  return Array.from(new Set(matches.map((url) => url.replace(/[.,;]+$/g, "").trim())));
+}
+
+function validateReportOrThrow(
+  reportMarkdown: string,
+  options?: { officialSourceUrls?: string[] }
+): void {
+  const requiredSectionPrefixes = [
     "**About This Service",
     "**Official Links**",
+    "**Related Articles (Context Only)**",
     "**Related YouTube Videos**",
     "**Key Insights**",
     "**Recommended Next Steps**",
   ];
 
-  for (const section of requiredSections) {
-    if (!reportMarkdown.includes(section)) {
-      throw new Error(`Report generation blocked: missing required section ${section}`);
+  const requiredOfficialSourceSections = [
+    "**About This Service",
+    "**Requirements & Process**",
+    "**Official Links**",
+    "**Recommended Next Steps**",
+  ];
+
+  const sections = splitReportSections(reportMarkdown);
+  const officialSet = new Set((options?.officialSourceUrls || []).map((u) => u.toLowerCase()));
+
+  for (const requiredPrefix of requiredSectionPrefixes) {
+    const found = sections.find((s) => s.heading.startsWith(requiredPrefix));
+    if (!found) {
+      throw new Error(`Report generation blocked: missing required section ${requiredPrefix}`);
+    }
+
+    if (!/(?:^|\n)Information:\s*\n/i.test(found.body)) {
+      throw new Error(`Report generation blocked: missing Information block in section ${requiredPrefix}`);
+    }
+    if (!/(?:^|\n)Sources:\s*\n/i.test(found.body)) {
+      throw new Error(`Report generation blocked: missing Sources block in section ${requiredPrefix}`);
+    }
+  }
+
+  for (const requiredPrefix of requiredOfficialSourceSections) {
+    const found = sections.find((s) => s.heading.startsWith(requiredPrefix));
+    if (!found) continue;
+    const sectionUrls = extractSourceUrlsFromSectionBody(found.body);
+
+    if (sectionUrls.length === 0) {
+      throw new Error(`Report generation blocked: section ${requiredPrefix} has no source URLs.`);
+    }
+
+    if (officialSet.size > 0) {
+      const hasOfficial = sectionUrls.some((u) => officialSet.has(u.toLowerCase()));
+      if (!hasOfficial) {
+        throw new Error(`Report generation blocked: section ${requiredPrefix} lacks official source URLs.`);
+      }
     }
   }
 
@@ -711,20 +786,23 @@ server.tool(
       const result = await researchGovernmentQuery(query, effectiveInstructions);
       const rawActionLinks = buildActionLinks(result.governmentService as any);
       const actionLinks = filterActionLinksForQuery(rawActionLinks, query);
-      const topResources = result.resources.slice(0, 10).map((r: any) => ({
-        title: r.title,
-        url: r.url,
-        type: r.type,
-        credibility: normalizeCredibilityForDisplay(r.type, r.url, r.credibility?.overall),
-        author: r.metadata?.author || undefined,
-        summary: r.metadata?.summary || undefined,
-        topComments: (r.opinions || []).slice(0, 4).map((o: any) => ({
-          text: o.text,
-          sentiment: o.sentiment,
-          label: o.label,
-          likes: o.likes,
-        })),
-      }));
+      const topResources = result.resources
+        .slice(0, 10)
+        .map((r: any) => ({
+          title: r.title,
+          url: r.url,
+          type: r.type,
+          credibility: normalizeCredibilityForDisplay(r.type, r.url, r.credibility?.overall),
+          author: r.metadata?.author || undefined,
+          summary: r.metadata?.summary || undefined,
+          topComments: (r.opinions || []).slice(0, 4).map((o: any) => ({
+            text: o.text,
+            sentiment: o.sentiment,
+            label: o.label,
+            likes: o.likes,
+          })),
+        }))
+        .sort((a: any, b: any) => b.credibility - a.credibility);
 
       const topVideos = topResources.filter((r: any) => r.type === "video").slice(0, 5);
       const topVideoLinks = topVideos.map((v: any) => ({ title: v.title, url: v.url, credibility: v.credibility }));
@@ -818,7 +896,7 @@ server.tool(
         sections.push(svc.description);
         if (svc.category) sections.push(`Category: ${svc.category}${svc.state ? ` | State: ${svc.state}` : ``}`);
         sections.push(``);
-        addSources(svc.officialLinks);
+        addSources(officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls);
       } else {
         sections.push(`**About This Service — Query Overview**`);
         sections.push(``);
@@ -837,8 +915,10 @@ server.tool(
         if (svc.processingTime) sections.push(`Processing Time: ${svc.processingTime}`);
         svc.requirements.forEach((req: string) => sections.push(`- ${req}`));
         sections.push(``);
-        const reqLinks = [...(svc.officialLinks || []), ...(svc.documentLinks || [])].slice(0, 6);
-        addSources(reqLinks.length > 0 ? reqLinks : allSourceUrls);
+        const reqLinks = officialSourceUrls
+          .filter((url) => isApplicationRelevantDocument(url) && !isPolicyOrMetaDocument(url))
+          .slice(0, 6);
+        addSources(reqLinks.length > 0 ? reqLinks : officialSourceUrls);
       }
 
       // Section: Official Action Links
@@ -937,7 +1017,12 @@ server.tool(
           sections.push(`   Type: ${r.type}`);
           sections.push(`   Credibility: ${Math.round(r.credibility)}/100`);
           if (r.author) sections.push(`   Author/Channel: ${r.author}`);
-          if (r.summary) sections.push(`   Summary: ${String(r.summary).replace(/\s+/g, " ").trim()}`);
+          if (r.summary) {
+            const cleanedSummary = String(r.summary).replace(/\s+/g, " ").trim();
+            if (!isLikelyPromotional(cleanedSummary)) {
+              sections.push(`   Summary: ${cleanedSummary}`);
+            }
+          }
           const comments = (r.topComments || [])
             .filter((c: any) => c?.label === "information")
             .map((c: any) => ({ ...c, text: normalizeLine(String(c.text), 220) }))
@@ -956,7 +1041,9 @@ server.tool(
 
       const sanitizedLines = sanitizeReportLines(sections);
       const responseMarkdown = sanitizedLines.join("\n");
-      validateReportOrThrow(responseMarkdown);
+      validateReportOrThrow(responseMarkdown, { officialSourceUrls });
+
+      const envelopedReport = `${REPORT_START}\n${responseMarkdown}\n${REPORT_END}`;
 
       // Format for ChatGPT consumption
       const formattedResult = {
@@ -987,9 +1074,9 @@ server.tool(
 
       // Return plain text markdown to maximize compatibility across clients.
       // Some clients ignore `markdown()` but display `text()` content reliably.
-      return text(responseMarkdown);
+      return text(envelopedReport);
     } catch (error) {
-      return text(`Research failed: ${error instanceof Error ? error.message : String(error)}`);
+      return text(`REQUEST_FAILED: MCP tool output unavailable or invalid.`);
     }
   }
 );
