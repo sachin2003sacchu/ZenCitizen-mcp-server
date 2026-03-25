@@ -1103,7 +1103,7 @@ Output Rules:
 8. Do NOT include tool-trace or meta lines (for example: "Called tool", "I am checking...").
 9. Output must always include a "Related YouTube Videos" section and list direct YouTube URLs in Information and Sources.
 10. Add "Related Articles (Context Only)" after Official Links with trust ranking (Tier 1 highest), prioritizing major news domains (Hindustan Times, The Hindu, Times of India, Deccan Herald, and Kannada newspapers).
-11. Add links-only sections: "Articles Related — <query>" and "YouTube Related — <query>" before "Key Insights". In those two sections, list only live URLs in Information and Sources (no summaries).
+11. Always add links-only sections: "Articles Related — <query>" and "YouTube Related — <query>" in the main report body (before long evidence sections when present). In those two sections, list only live URLs in Information and Sources (no summaries).
 12. Output must end with factual report sections only.`;
 
 server.tool(
@@ -1342,32 +1342,6 @@ server.tool(
       sections.push(``);
       addSources(topVideos.map((v: any) => v.url));
 
-      // Section: Links-only articles for downstream chat clients
-      sections.push(`**Articles Related — ${queryLabel}**`);
-      sections.push(``);
-      sections.push(`Information:`);
-      const articleOnlyLinks = Array.from(new Set(rankedArticles.map((a) => a.url).filter(Boolean))).slice(0, 8);
-      if (articleOnlyLinks.length > 0) {
-        articleOnlyLinks.forEach((url, i) => sections.push(`${i + 1}. ${url}`));
-      } else {
-        sections.push(`- No article links were retrieved for this query.`);
-      }
-      sections.push(``);
-      addSources(articleOnlyLinks);
-
-      // Section: Links-only videos for downstream chat clients
-      sections.push(`**YouTube Related — ${queryLabel}**`);
-      sections.push(``);
-      sections.push(`Information:`);
-      const youtubeOnlyLinks = Array.from(new Set(topVideos.map((v: any) => v.url).filter(Boolean))).slice(0, 8);
-      if (youtubeOnlyLinks.length > 0) {
-        youtubeOnlyLinks.forEach((url, i) => sections.push(`${i + 1}. ${url}`));
-      } else {
-        sections.push(`- No YouTube links were retrieved for this query.`);
-      }
-      sections.push(``);
-      addSources(youtubeOnlyLinks);
-
       // Section: Twitter/X
       if (topTweets.length > 0) {
         sections.push(`**Community Discussion (Twitter/X)**`);
@@ -1397,38 +1371,56 @@ server.tool(
       sections.push(``);
       addSources(processSpecificOfficialUrls.length > 0 ? processSpecificOfficialUrls : (officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls));
 
+      // Section: Links-only articles for downstream chat clients
+      sections.push(`**Articles Related — ${queryLabel}**`);
+      sections.push(``);
+      sections.push(`Information:`);
+      const articleOnlyLinks = Array.from(new Set(rankedArticles.map((a) => a.url).filter(Boolean))).slice(0, 8);
+      if (articleOnlyLinks.length > 0) {
+        articleOnlyLinks.forEach((url, i) => sections.push(`${i + 1}. ${url}`));
+      } else {
+        sections.push(`- No article links were retrieved for this query.`);
+      }
+      sections.push(``);
+      addSources(articleOnlyLinks);
+
+      // Section: Links-only videos for downstream chat clients
+      sections.push(`**YouTube Related — ${queryLabel}**`);
+      sections.push(``);
+      sections.push(`Information:`);
+      const youtubeOnlyLinks = Array.from(new Set(topVideos.map((v: any) => v.url).filter(Boolean))).slice(0, 8);
+      if (youtubeOnlyLinks.length > 0) {
+        youtubeOnlyLinks.forEach((url, i) => sections.push(`${i + 1}. ${url}`));
+      } else {
+        sections.push(`- No YouTube links were retrieved for this query.`);
+      }
+      sections.push(``);
+      addSources(youtubeOnlyLinks);
+
       // Section: Detailed Evidence Ledger
-      // This section is intentionally exhaustive to maximize grounded detail for downstream clients.
+      // Keep this compact so core sections and links-only sections remain visible in chat clients.
       if (topResources.length > 0) {
         sections.push(`**Detailed Evidence Ledger**`);
         sections.push(``);
         sections.push(`Information:`);
-        topResources.forEach((r: any, i: number) => {
+        topResources.slice(0, 3).forEach((r: any, i: number) => {
           sections.push(`${i + 1}. Title: ${r.title}`);
           sections.push(`   Type: ${r.type}`);
           sections.push(`   Credibility: ${Math.round(r.credibility)}/100`);
           if (r.author) sections.push(`   Author/Channel: ${r.author}`);
-          if (r.summary) {
-            const cleanedSummary = String(r.summary).replace(/\s+/g, " ").trim();
-            if (!isLikelyPromotional(cleanedSummary) && !isLikelyNoisyComment(cleanedSummary) && (hasGovernmentProcessSignal(cleanedSummary) || hasQuerySignal(cleanedSummary, query))) {
-              sections.push(`   Summary: ${cleanedSummary}`);
-            }
-          }
           const comments = (r.topComments || [])
             .filter((c: any) => c?.label === "information")
-            .map((c: any) => ({ ...c, text: normalizeLine(String(c.text), 220) }))
+            .map((c: any) => ({ ...c, text: normalizeLine(String(c.text), 160) }))
             .filter((c: any) => c.text && !isLikelyNoisyComment(c.text) && !isLikelyPromotional(c.text))
             .filter((c: any) => hasGovernmentProcessSignal(c.text) || hasQuerySignal(c.text, query))
-            .slice(0, 3);
+            .slice(0, 1);
           if (comments.length > 0) {
             sections.push(`   Key comments:`);
-            comments.forEach((c: any) =>
-              sections.push(`   - "${c.text}" (${c.likes} likes)`)
-            );
+            comments.forEach((c: any) => sections.push(`   - "${c.text}" (${c.likes} likes)`));
           }
           sections.push(``);
         });
-        addSources(topResources.map((r: any) => r.url));
+        addSources(topResources.slice(0, 3).map((r: any) => r.url));
       }
 
       const sanitizedLines = sanitizeReportLines(sections);
