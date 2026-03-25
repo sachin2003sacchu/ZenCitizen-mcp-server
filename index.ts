@@ -257,11 +257,50 @@ type RankedSource = {
   rationale: string;
 };
 
+const PREFERRED_NEWS_DOMAINS = [
+  "hindustantimes.com",
+  "thehindu.com",
+  "timesofindia.indiatimes.com",
+  "deccanherald.com",
+  "prajavani.net",
+  "vijaykarnataka.com",
+  "kannadaprabha.com",
+  "udayavani.com",
+  "vijayavani.net",
+  "kannadadunia.com",
+];
+
+function getHostname(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function isPreferredNewsDomain(url: string): boolean {
+  const host = getHostname(url);
+  return PREFERRED_NEWS_DOMAINS.some((domain) => host === domain || host.endsWith(`.${domain}`));
+}
+
+function isLikelyArticlePage(url: string): boolean {
+  const lower = url.toLowerCase();
+  // Keep article/news/explainer/report pages, avoid forms/downloads and raw docs.
+  const articleSignals = /(news|article|explainer|story|stories|report|analysis|opinion|editorial|state|city|bengaluru|karnataka)/.test(lower);
+  const nonArticleSignals = /(download|form|pdf|\.pdf$|policy|privacy|terms|sitemap|data-sharing|retention|archieval|archive)/.test(lower);
+  return articleSignals && !nonArticleSignals;
+}
+
 function rankArticleSource(url: string, title?: string): RankedSource {
   const safeTitle = normalizeLine(title || "Article reference", 140);
   const lower = url.toLowerCase();
   let rank = 25;
   const reasons: string[] = [];
+
+  if (isPreferredNewsDomain(url)) {
+    rank += 55;
+    reasons.push("major national/regional news source");
+  }
 
   if (/\.gov\.in|\.nic\.in/.test(lower)) {
     rank += 60;
@@ -278,6 +317,11 @@ function rankArticleSource(url: string, title?: string): RankedSource {
     reasons.push("policy/help content");
   }
 
+  if (isLikelyArticlePage(url)) {
+    rank += 20;
+    reasons.push("article-like page");
+  }
+
   if (/youtube\.com|twitter\.com|x\.com/.test(lower)) {
     rank -= 45;
     reasons.push("community platform");
@@ -286,6 +330,11 @@ function rankArticleSource(url: string, title?: string): RankedSource {
   if (isPolicyOrMetaDocument(lower)) {
     rank -= 20;
     reasons.push("non-application policy/meta page");
+  }
+
+  if (!isLikelyArticlePage(url) && !isPreferredNewsDomain(url)) {
+    rank -= 15;
+    reasons.push("weak article signals");
   }
 
   const clipped = Math.max(0, Math.min(100, rank));
@@ -309,14 +358,16 @@ function extractRankedArticles(input: {
   const candidates: RankedSource[] = [];
 
   for (const resource of input.topResources) {
-    if (!["guide", "forum", "official"].includes(resource.type)) continue;
+    // Prefer article-like resources and trusted news domains.
+    if (!["guide", "forum", "official", "tweet"].includes(resource.type)) continue;
     if (!resource.url) continue;
+    if (!isPreferredNewsDomain(resource.url) && !isLikelyArticlePage(resource.url)) continue;
     candidates.push(rankArticleSource(resource.url, resource.title));
   }
 
   for (const url of input.officialSourceUrls) {
     if (!url) continue;
-    if (!/(news|article|press|release|faq|notification|circular|guideline|scheme|overview|instruction|service|form|apply|permit|license|idp)/i.test(url)) {
+    if (!isLikelyArticlePage(url)) {
       continue;
     }
     candidates.push(rankArticleSource(url, "Official article or notice"));
@@ -337,11 +388,8 @@ function extractRankedArticles(input: {
 
   if (ranked.length > 0) return ranked;
 
-  // Fallback: include top official pages as contextual references instead of returning empty.
-  return input.officialSourceUrls
-    .filter((url) => isApplicationRelevantDocument(url))
-    .slice(0, 3)
-    .map((url) => rankArticleSource(url, "Official guidance reference"));
+  // No reliable article candidates found in retrieved context.
+  return [];
 }
 
 function buildUserFriendlyInsights(
@@ -808,7 +856,7 @@ Output Rules:
 7. Do NOT add conversational closers, offers, or follow-up prompts (for example: "If you want...", "Would you like...", "I can also...").
 8. Do NOT include tool-trace or meta lines (for example: "Called tool", "I am checking...").
 9. Output must always include a "Related YouTube Videos" section and list direct YouTube URLs in Information and Sources.
-10. Add "Related Articles (Context Only)" after Official Links with trust ranking (Tier 1 highest).
+10. Add "Related Articles (Context Only)" after Official Links with trust ranking (Tier 1 highest), prioritizing major news domains (Hindustan Times, The Hindu, Times of India, Deccan Herald, and Kannada newspapers).
 11. Output must end with factual report sections only.`;
 
 server.tool(
