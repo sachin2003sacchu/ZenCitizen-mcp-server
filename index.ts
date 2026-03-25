@@ -392,6 +392,87 @@ function extractRankedArticles(input: {
   return [];
 }
 
+function extractUrlsFromText(raw: string): string[] {
+  const matches = raw.match(/https?:\/\/[^\s"'<>]+/g) || [];
+  return matches
+    .map((url) => url.replace(/[).,;!?]+$/g, "").trim())
+    .filter(Boolean);
+}
+
+function decodeDuckDuckGoUrl(url: string): string {
+  if (!url) return "";
+
+  try {
+    const parsed = new URL(url, "https://duckduckgo.com");
+    const uddg = parsed.searchParams.get("uddg");
+    if (uddg) return decodeURIComponent(uddg);
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+async function fetchArticlesFromWeb(query: string): Promise<RankedSource[]> {
+  const searchQueries = [
+    `${query} site:hindustantimes.com OR site:thehindu.com OR site:timesofindia.indiatimes.com OR site:deccanherald.com OR site:prajavani.net OR site:vijaykarnataka.com OR site:kannadaprabha.com OR site:udayavani.com`,
+    `${query} Karnataka news`,
+  ];
+
+  const collected = new Map<string, RankedSource>();
+
+  for (const q of searchQueries) {
+    try {
+      const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
+      const response = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        },
+      });
+      if (!response.ok) continue;
+
+      const html = await response.text();
+      const rawUrls = extractUrlsFromText(html)
+        .map((u) => decodeDuckDuckGoUrl(u))
+        .filter((u) => u.startsWith("http"));
+
+      for (const candidateUrl of rawUrls) {
+        const lower = candidateUrl.toLowerCase();
+        if (/(youtube\.com|twitter\.com|x\.com|duckduckgo\.com)/.test(lower)) continue;
+        if (!isPreferredNewsDomain(candidateUrl) && !isLikelyArticlePage(candidateUrl)) continue;
+
+        const ranked = rankArticleSource(candidateUrl, "News article reference");
+        const key = ranked.url.toLowerCase();
+        const existing = collected.get(key);
+        if (!existing || ranked.rank > existing.rank) {
+          collected.set(key, ranked);
+        }
+      }
+    } catch {
+      // Keep best-effort behavior. No throw: article block should degrade gracefully.
+    }
+  }
+
+  return Array.from(collected.values())
+    .sort((a, b) => b.rank - a.rank)
+    .slice(0, 6);
+}
+
+function mergeRankedArticles(primary: RankedSource[], secondary: RankedSource[]): RankedSource[] {
+  const deduped = new Map<string, RankedSource>();
+
+  for (const article of [...primary, ...secondary]) {
+    const key = article.url.toLowerCase();
+    const existing = deduped.get(key);
+    if (!existing || article.rank > existing.rank) {
+      deduped.set(key, article);
+    }
+  }
+
+  return Array.from(deduped.values())
+    .sort((a, b) => b.rank - a.rank)
+    .slice(0, 6);
+}
+
 function buildUserFriendlyInsights(
   keyPoints: Array<{ text: string }>,
   requirements: string[]
@@ -927,10 +1008,12 @@ server.tool(
         result.governmentService?.requirements || []
       );
 
-      const rankedArticles = extractRankedArticles({
+      const rankedArticlesFromContext = extractRankedArticles({
         topResources,
         officialSourceUrls,
       });
+      const rankedArticlesFromWeb = await fetchArticlesFromWeb(query);
+      const rankedArticles = mergeRankedArticles(rankedArticlesFromContext, rankedArticlesFromWeb);
 
       const userFriendlyNextSteps = buildUserFriendlyNextSteps({
         actionLinks,
