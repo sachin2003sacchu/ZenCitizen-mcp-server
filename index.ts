@@ -126,6 +126,46 @@ function filterOfficialUrlsForQuery(urls: string[], query: string): string[] {
     });
 }
 
+function scoreProcessSpecificity(url: string, query: string): number {
+  const lower = url.toLowerCase();
+  let score = 0;
+
+  if (/\.gov\.in|\.nic\.in/.test(lower)) score += 25;
+  if (isApplicationRelevantDocument(lower)) score += 35;
+  if (/(form|apply|application|guideline|faq|instruction|service|permit|license|idp|khata|parivahan|bbmp|sarathi|rto)/.test(lower)) score += 25;
+  if (isPolicyOrMetaDocument(lower)) score -= 30;
+
+  const queryTokens = tokenize(query);
+  const tokenMatches = queryTokens.filter((t) => lower.includes(t)).length;
+  score += Math.min(20, tokenMatches * 5);
+
+  try {
+    const parsed = new URL(url);
+    // Prefer deeper URLs over root-only homepages for procedural claims.
+    if (parsed.pathname && parsed.pathname !== "/") score += 10;
+    else score -= 10;
+  } catch {
+    // noop
+  }
+
+  return score;
+}
+
+function selectProcessSpecificOfficialUrls(urls: string[], query: string, maxCount = 6): string[] {
+  const ranked = Array.from(new Set(urls))
+    .filter(Boolean)
+    .map((url) => ({ url, score: scoreProcessSpecificity(url, query) }))
+    .sort((a, b) => b.score - a.score)
+    .map((x) => x.url);
+
+  return ranked.slice(0, maxCount);
+}
+
+function formatClaimWithSource(claim: string, sourceUrl?: string): string {
+  if (!sourceUrl) return claim;
+  return `${claim} [Source: ${sourceUrl}]`;
+}
+
 function filterActionLinksForQuery(
   links: Array<{ label: string; url: string; purpose: string }>,
   query: string
@@ -832,6 +872,7 @@ server.tool(
           ...actionLinks.map((a: any) => a.url),
         ])
       ), query);
+      const processSpecificOfficialUrls = selectProcessSpecificOfficialUrls(officialSourceUrls, query, 8);
 
       const userFriendlyInsights = buildUserFriendlyInsights(
         topKeyPoints,
@@ -896,7 +937,7 @@ server.tool(
         sections.push(svc.description);
         if (svc.category) sections.push(`Category: ${svc.category}${svc.state ? ` | State: ${svc.state}` : ``}`);
         sections.push(``);
-        addSources(officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls);
+        addSources(processSpecificOfficialUrls.length > 0 ? processSpecificOfficialUrls : (officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls));
       } else {
         sections.push(`**About This Service — Query Overview**`);
         sections.push(``);
@@ -912,13 +953,14 @@ server.tool(
         sections.push(`**Requirements & Process**`);
         sections.push(``);
         sections.push(`Information:`);
-        if (svc.processingTime) sections.push(`Processing Time: ${svc.processingTime}`);
-        svc.requirements.forEach((req: string) => sections.push(`- ${req}`));
+        const reqSource = processSpecificOfficialUrls[0] || officialSourceUrls[0];
+        if (svc.processingTime) sections.push(formatClaimWithSource(`Processing Time: ${svc.processingTime}`, reqSource));
+        svc.requirements.forEach((req: string) => sections.push(`- ${formatClaimWithSource(req, reqSource)}`));
         sections.push(``);
-        const reqLinks = officialSourceUrls
+        const reqLinks = processSpecificOfficialUrls
           .filter((url) => isApplicationRelevantDocument(url) && !isPolicyOrMetaDocument(url))
           .slice(0, 6);
-        addSources(reqLinks.length > 0 ? reqLinks : officialSourceUrls);
+        addSources(reqLinks.length > 0 ? reqLinks : processSpecificOfficialUrls);
       }
 
       // Section: Official Action Links
@@ -926,9 +968,14 @@ server.tool(
         sections.push(`**Official Links**`);
         sections.push(``);
         sections.push(`Information:`);
-        actionLinks.forEach((a: any) => sections.push(`- ${a.label}: ${a.url}`));
+        const officialRanked = selectProcessSpecificOfficialUrls(actionLinks.map((a: any) => a.url), query, 8);
+        const actionByUrl = new Map(actionLinks.map((a: any) => [a.url, a]));
+        officialRanked.forEach((url: string) => {
+          const a: any = actionByUrl.get(url);
+          sections.push(`- ${(a?.label || "Official process link")}: ${url}`);
+        });
         sections.push(``);
-        addSources(actionLinks.map((a: any) => a.url));
+        addSources(officialRanked.length > 0 ? officialRanked : actionLinks.map((a: any) => a.url));
       } else {
         sections.push(`**Official Links**`);
         sections.push(``);
@@ -1002,9 +1049,12 @@ server.tool(
       sections.push(`**Recommended Next Steps**`);
       sections.push(``);
       sections.push(`Information:`);
-      finalNextSteps.forEach((step: string, i: number) => sections.push(`${i + 1}. ${step}`));
+      const nextStepSource = processSpecificOfficialUrls[0] || officialSourceUrls[0];
+      finalNextSteps.forEach((step: string, i: number) =>
+        sections.push(`${i + 1}. ${formatClaimWithSource(step, nextStepSource)}`)
+      );
       sections.push(``);
-      addSources(officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls);
+      addSources(processSpecificOfficialUrls.length > 0 ? processSpecificOfficialUrls : (officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls));
 
       // Section: Detailed Evidence Ledger
       // This section is intentionally exhaustive to maximize grounded detail for downstream clients.
@@ -1041,7 +1091,7 @@ server.tool(
 
       const sanitizedLines = sanitizeReportLines(sections);
       const responseMarkdown = sanitizedLines.join("\n");
-      validateReportOrThrow(responseMarkdown, { officialSourceUrls });
+      validateReportOrThrow(responseMarkdown, { officialSourceUrls: processSpecificOfficialUrls.length > 0 ? processSpecificOfficialUrls : officialSourceUrls });
 
       const envelopedReport = `${REPORT_START}\n${responseMarkdown}\n${REPORT_END}`;
 
