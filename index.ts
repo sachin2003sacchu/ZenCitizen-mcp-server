@@ -802,6 +802,8 @@ function validateReportOrThrow(
     "**Related YouTube Videos**",
     "**Key Insights**",
     "**Recommended Next Steps**",
+    "**Articles Related",
+    "**YouTube Related",
   ];
 
   const requiredOfficialSourceSections = [
