@@ -546,13 +546,14 @@ function decodeDuckDuckGoUrl(url: string): string {
   }
 }
 
-async function fetchArticlesFromWeb(query: string): Promise<RankedSource[]> {
+async function fetchArticlesFromWeb(query: string): Promise<{ rankedArticles: RankedSource[]; fetchedUrls: string[] }> {
   const searchQueries = [
     `${query} site:hindustantimes.com OR site:thehindu.com OR site:timesofindia.indiatimes.com OR site:deccanherald.com OR site:prajavani.net OR site:vijaykarnataka.com OR site:kannadaprabha.com OR site:udayavani.com`,
     `${query} explained rules validity apply process`,
   ];
 
   const collected = new Map<string, RankedSource>();
+  const fetchedUrls = new Set<string>();
 
   for (const q of searchQueries) {
     try {
@@ -566,6 +567,10 @@ async function fetchArticlesFromWeb(query: string): Promise<RankedSource[]> {
 
       const html = await response.text();
       const rawUrls = extractSearchResultUrls(html);
+
+      rawUrls
+        .filter((candidateUrl) => /^https?:\/\//i.test(candidateUrl))
+        .forEach((candidateUrl) => fetchedUrls.add(candidateUrl));
 
       for (const candidateUrl of rawUrls) {
         if (!isStrictArticleCandidate(candidateUrl, "News article reference", query)) continue;
@@ -597,6 +602,10 @@ async function fetchArticlesFromWeb(query: string): Promise<RankedSource[]> {
       const rssText = await rssResp.text();
       const rssUrls = extractGoogleNewsRssUrls(rssText);
 
+      rssUrls
+        .filter((candidateUrl) => /^https?:\/\//i.test(candidateUrl))
+        .forEach((candidateUrl) => fetchedUrls.add(candidateUrl));
+
       for (const candidateUrl of rssUrls) {
         if (!isStrictArticleCandidate(candidateUrl, "News article reference", query)) continue;
 
@@ -612,9 +621,12 @@ async function fetchArticlesFromWeb(query: string): Promise<RankedSource[]> {
     // Keep best-effort behavior. No throw: article block should degrade gracefully.
   }
 
-  return Array.from(collected.values())
-    .sort((a, b) => b.rank - a.rank)
-    .slice(0, 6);
+  return {
+    rankedArticles: Array.from(collected.values())
+      .sort((a, b) => b.rank - a.rank)
+      .slice(0, 6),
+    fetchedUrls: Array.from(fetchedUrls),
+  };
 }
 
 function mergeRankedArticles(primary: RankedSource[], secondary: RankedSource[]): RankedSource[] {
@@ -1121,8 +1133,7 @@ server.tool(
       const result = await researchGovernmentQuery(query, effectiveInstructions);
       const rawActionLinks = buildActionLinks(result.governmentService as any);
       const actionLinks = filterActionLinksForQuery(rawActionLinks, query);
-      const topResources = result.resources
-        .slice(0, 10)
+      const allResources = result.resources
         .map((r: any) => ({
           title: r.title,
           url: r.url,
@@ -1139,16 +1150,19 @@ server.tool(
         }))
         .sort((a: any, b: any) => b.credibility - a.credibility);
 
-      const topVideos = topResources.filter((r: any) => r.type === "video").slice(0, 5);
+      const topResources = allResources.slice(0, 10);
+
+      const topVideos = allResources.filter((r: any) => r.type === "video").slice(0, 5);
       const topVideoLinks = topVideos.map((v: any) => ({ title: v.title, url: v.url, credibility: v.credibility }));
-      const topTweets = topResources.filter((r: any) => r.type === "tweet").slice(0, 5);
+      const topTweets = allResources.filter((r: any) => r.type === "tweet").slice(0, 5);
       const topTweetLinks = topTweets.map((t: any) => ({ title: t.title, url: t.url, credibility: t.credibility }));
       const topKeyPoints = result.topKeyPoints.slice(0, 8);
-      const allSourceUrls = Array.from(
+      const baseFetchedUrls = Array.from(
         new Set(
           [
-            ...topResources.map((r: any) => r.url),
+            ...allResources.map((r: any) => r.url),
             ...actionLinks.map((a: any) => a.url),
+            ...rawActionLinks.map((a: any) => a.url),
             ...(result.governmentService?.officialLinks || []),
             ...(result.governmentService?.documentLinks || []),
           ].filter((u): u is string => Boolean(u && typeof u === "string"))
@@ -1181,8 +1195,18 @@ server.tool(
         officialSourceUrls,
         query,
       });
-      const rankedArticlesFromWeb = await fetchArticlesFromWeb(query);
+      const webArticleResult = await fetchArticlesFromWeb(query);
+      const rankedArticlesFromWeb = webArticleResult.rankedArticles;
       const rankedArticles = mergeRankedArticles(rankedArticlesFromContext, rankedArticlesFromWeb);
+      const allSourceUrls = Array.from(
+        new Set(
+          [
+            ...baseFetchedUrls,
+            ...rankedArticles.map((a) => a.url),
+            ...webArticleResult.fetchedUrls,
+          ].filter((u): u is string => Boolean(u && typeof u === "string"))
+        )
+      );
 
       const userFriendlyNextSteps = buildUserFriendlyNextSteps({
         actionLinks,
@@ -1367,6 +1391,18 @@ server.tool(
       }
       sections.push(``);
       addSources(youtubeOnlyLinks);
+
+      // Section: All fetched links (must include every fetched URL for this query)
+      sections.push(`**All Fetched Links — ${queryLabel}**`);
+      sections.push(``);
+      sections.push(`Information:`);
+      if (allSourceUrls.length > 0) {
+        allSourceUrls.forEach((url, i) => sections.push(`${i + 1}. ${url}`));
+      } else {
+        sections.push(`- No links were fetched for this query.`);
+      }
+      sections.push(``);
+      addSources(allSourceUrls);
 
       // Section: Twitter/X
       if (topTweets.length > 0) {
