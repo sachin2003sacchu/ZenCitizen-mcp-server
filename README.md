@@ -205,7 +205,7 @@ async def get_weather(
 
 # Start server with auto-inspector
 server.run(transport="streamable-http", port=8000)
-# 🎉 Inspector at http://localhost:8000/inspector
+# Inspector at http://localhost:8000/inspector
 ```
 
 [**→ Full Python Server Documentation**](https://mcp-use.com/docs/python/server/index)
@@ -258,7 +258,7 @@ This monorepo contains multiple packages for both Python and TypeScript:
 
 | Package     | Description                           | Version                                                                                 |
 | ----------- | ------------------------------------- | --------------------------------------------------------------------------------------- |
-| **mcp-use** | Complete MCP server and MCP agent SDK | [![PyPI](https://img.shields.io/pypi/v/mcp_use.svg)](https://pypi.org/project/mcp_use/) |
+ws| **mcp-use** | Complete MCP server and MCP agent SDK | [![PyPI](https://img.shields.io/pypi/v/mcp_use.svg)](https://pypi.org/project/mcp_use/) |
 
 ### TypeScript Packages
 
@@ -428,15 +428,10 @@ main();
 
 ---
 
-## Community & Support
+## Support
 
-- **Discord**: [Join our community](https://discord.gg/XkNkSkMz3V)
-- **GitHub Issues**: [Report bugs or request features](https://github.com/mcp-use/mcp-use/issues)
-- **Documentation**: [mcp-use.com/docs](https://mcp-use.com/docs)
-- **Website**: [manufact.com](https://manufact.com)
-- **X.com**: Follow [Manufact](https://x.com/manufact)
-- **Contributing**: See [CONTRIBUTING.md](https://github.com/mcp-use/mcp-use/blob/main/CONTRIBUTING.md)
-- **License**: MIT © [MCP-Use Contributors](https://github.com/mcp-use/mcp-use/graphs/contributors)
+- For bug reports or feature requests, open an issue in this repository.
+- License: MIT
 
 ---
 
@@ -446,26 +441,14 @@ main();
 
 ---
 
-## Contributors
+## Author
 
-Thanks to all our amazing contributors!
-
-### Core Contributors
-
-1. **Pietro** ([@pietrozullo](https://github.com/pietrozullo))
-2. **Luigi** ([@pederzh](https://github.com/pederzh))
-3. **Enrico** ([@tonxxd](https://github.com/tonxxd))
-
-<br>
-
-<a href="https://github.com/mcp-use/mcp-use/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=mcp-use/mcp-use" />
-</a>
+This project is fully built and maintained by me.
 
 ---
 
 <div align="center">
-  <strong>Built with ❤️ by Manufact team and the mcp-use community</strong>
+  <strong>Built and maintained by me</strong>
   <br/>
   <sub>San Francisco | Zürich</sub>
 </div>
