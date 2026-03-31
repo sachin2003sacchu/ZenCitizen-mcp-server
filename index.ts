@@ -940,40 +940,6 @@ server.tool(
 
 server.tool(
   {
-    name: "get-fruit-details",
-    description: "Get detailed information about a specific fruit",
-    schema: z.object({
-      fruit: z.string().describe("The fruit name"),
-    }),
-    outputSchema: z.object({
-      fruit: z.string(),
-      color: z.string(),
-      facts: z.array(z.string()),
-    }),
-  },
-  async ({ fruit }: { fruit: string }) => {
-    const found = fruits.find(
-      (f) => f.fruit?.toLowerCase() === fruit?.toLowerCase()
-    );
-    return object({
-      fruit: found?.fruit ?? fruit,
-      color: found?.color ?? "unknown",
-      facts: [
-        `${fruit} is a delicious fruit`,
-        `Color: ${found?.color ?? "unknown"}`,
-      ],
-    });
-  }
-);
-
-
-/**
- * YOUTUBE SEARCH TOOL
- * Searches YouTube videos and fetches top comments
- * Requires: YOUTUBE_API_KEY environment variable
- */
-server.tool(
-  {
     name: "search-youtube",
     description: "Search YouTube videos and get comments related to a query",
     schema: z.object({
