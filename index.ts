@@ -643,6 +643,21 @@ function decodeDuckDuckGoUrl(url: string): string {
   }
 }
 
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 async function fetchArticlesFromWeb(query: string): Promise<{ rankedArticles: RankedSource[]; fetchedUrls: string[] }> {
   const searchQueries = [
     `${query} site:hindustantimes.com OR site:thehindu.com OR site:timesofindia.indiatimes.com OR site:deccanherald.com OR site:prajavani.net OR site:vijaykarnataka.com OR site:kannadaprabha.com OR site:udayavani.com`,
@@ -655,11 +670,11 @@ async function fetchArticlesFromWeb(query: string): Promise<{ rankedArticles: Ra
   for (const q of searchQueries) {
     try {
       const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
-      const response = await fetch(url, {
+      const response = await fetchWithTimeout(url, {
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         },
-      });
+      }, 4500);
       if (!response.ok) continue;
 
       const html = await response.text();
@@ -689,11 +704,11 @@ async function fetchArticlesFromWeb(query: string): Promise<{ rankedArticles: Ra
     const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(
       `${query} (international driving permit OR idp) (india OR karnataka)`
     )}&hl=en-IN&gl=IN&ceid=IN:en`;
-    const rssResp = await fetch(rssUrl, {
+    const rssResp = await fetchWithTimeout(rssUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
       },
-    });
+    }, 4500);
 
     if (rssResp.ok) {
       const rssText = await rssResp.text();

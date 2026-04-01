@@ -4,6 +4,9 @@ import type { ResearchQueryResult } from "./resources/research-agent/types.js";
 import { processYouTubeResults, processTwitterResults, compileResearchResult } from "./resources/research-agent/orchestrator.js";
 import { summarizeForVideo } from "./resources/research-agent/llm.js";
 
+const API_TIMEOUT_MS = 8000;
+const COMMENT_TIMEOUT_MS = 5000;
+
 function normalizeBearerToken(rawToken: string): string {
   const trimmed = rawToken
     .trim()
@@ -47,6 +50,7 @@ export async function searchYouTube(query: string): Promise<YouTubeResults> {
 
       // Search for videos - India specific
       const searchResponse = await axios.get("https://www.googleapis.com/youtube/v3/search", {
+        timeout: API_TIMEOUT_MS,
         params: {
           q: variant,
           key: apiKey,
@@ -85,40 +89,47 @@ export async function searchYouTube(query: string): Promise<YouTubeResults> {
     const commentsByVideo: Record<string, YouTubeComment[]> = {};
     const aggregatedComments: YouTubeComment[] = [];
 
-    for (const video of videos) {
-      try {
-        const commentsResponse = await axios.get("https://www.googleapis.com/youtube/v3/commentThreads", {
-          params: {
-            videoId: video.id,
-            key: apiKey,
-            part: "snippet",
-            maxResults: 3,
-            textFormat: "plainText",
-          },
-        });
-
-        const videoComments: YouTubeComment[] = (commentsResponse.data.items || [])
-          .map((thread: any) => {
-            const comment = thread.snippet.topLevelComment.snippet;
-            return {
-              id: thread.id,
-              authorDisplayName: comment.authorDisplayName,
-              textDisplay: comment.textDisplay,
-              likeCount: comment.likeCount,
-              publishedAt: comment.publishedAt,
-              authorProfileImageUrl: comment.authorProfileImageUrl,
+    const commentResults = await Promise.all(
+      videos.map(async (video) => {
+        try {
+          const commentsResponse = await axios.get("https://www.googleapis.com/youtube/v3/commentThreads", {
+            timeout: COMMENT_TIMEOUT_MS,
+            params: {
               videoId: video.id,
-            };
-          })
-          .slice(0, 3);
+              key: apiKey,
+              part: "snippet",
+              maxResults: 3,
+              textFormat: "plainText",
+            },
+          });
 
-        commentsByVideo[video.id] = videoComments;
-        aggregatedComments.push(...videoComments);
-      } catch (error) {
-        console.warn(`Could not fetch comments for video ${video.id}:`, (error as any)?.message || error);
-        commentsByVideo[video.id] = [];
-      }
-    }
+          const videoComments: YouTubeComment[] = (commentsResponse.data.items || [])
+            .map((thread: any) => {
+              const comment = thread.snippet.topLevelComment.snippet;
+              return {
+                id: thread.id,
+                authorDisplayName: comment.authorDisplayName,
+                textDisplay: comment.textDisplay,
+                likeCount: comment.likeCount,
+                publishedAt: comment.publishedAt,
+                authorProfileImageUrl: comment.authorProfileImageUrl,
+                videoId: video.id,
+              };
+            })
+            .slice(0, 3);
+
+          return { videoId: video.id, comments: videoComments };
+        } catch (error) {
+          console.warn(`Could not fetch comments for video ${video.id}:`, (error as any)?.message || error);
+          return { videoId: video.id, comments: [] as YouTubeComment[] };
+        }
+      })
+    );
+
+    commentResults.forEach(({ videoId, comments }) => {
+      commentsByVideo[videoId] = comments;
+      aggregatedComments.push(...comments);
+    });
 
     return {
       videos,
@@ -148,6 +159,7 @@ export async function searchTwitter(query: string): Promise<TwitterResults> {
     const indiaQuery = `(${query}) (India OR Indian OR "in" OR "IN") lang:en`;
     
     const response = await axios.get("https://api.twitter.com/2/tweets/search/recent", {
+      timeout: API_TIMEOUT_MS,
       headers: {
         Authorization: `Bearer ${bearerToken}`,
       },
