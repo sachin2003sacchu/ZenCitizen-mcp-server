@@ -92,6 +92,10 @@ function toPlainTextReport(input: string): string {
   const lines = String(input || "").split("\n");
   const output: string[] = [];
   let keepSection = false;
+  const seenUrls = new Set<string>();
+  let currentSection = "";
+  let articleCount = 0;
+  let videoCount = 0;
 
   for (const raw of lines) {
     let clean = raw;
@@ -104,6 +108,9 @@ function toPlainTextReport(input: string): string {
       const heading = normalizeHeading(clean);
       keepSection = allowedSections.some((prefix) => heading.startsWith(prefix));
       if (keepSection) {
+        currentSection = heading;
+        if (heading.startsWith("Related Articles")) articleCount = 0;
+        if (heading.startsWith("Related YouTube Videos")) videoCount = 0;
         output.push(heading);
         output.push("");
       }
@@ -113,9 +120,33 @@ function toPlainTextReport(input: string): string {
     if (!keepSection) continue;
 
     clean = clean.replace(/\*\*(.*?)\*\*/g, "$1");
+    clean = clean.replace(/^\s*(Information:|Sources:)\s*$/i, "");
+    clean = clean.replace(/\s*\[Source:\s*https?:\/\/[^\]]+\]\s*$/i, "");
+    clean = clean.replace(/^\s*-\s*".*"\s*\(\d+\s*likes\)\s*$/i, "");
+
+    if (!clean.trim()) {
+      output.push("");
+      continue;
+    }
+
+    // Cap long list sections to improve parent-LLM readability.
+    if (currentSection.startsWith("Related Articles") && /^\s*\d+\./.test(clean)) {
+      articleCount += 1;
+      if (articleCount > 3) continue;
+    }
+    if (currentSection.startsWith("Related YouTube Videos") && /^\s*\d+\./.test(clean)) {
+      videoCount += 1;
+      if (videoCount > 3) continue;
+    }
 
     const maybeUrl = extractUrl(clean);
     if (maybeUrl && isNoiseUrl(maybeUrl)) continue;
+
+    // Drop duplicate URL-only lines (typically repeated under Sources blocks).
+    if (maybeUrl) {
+      if (seenUrls.has(maybeUrl) && /^\s*https?:\/\//.test(clean)) continue;
+      seenUrls.add(maybeUrl);
+    }
 
     output.push(clean);
   }
