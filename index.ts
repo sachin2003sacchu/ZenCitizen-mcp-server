@@ -57,8 +57,23 @@ const BANNED_OUTPUT_PATTERNS = [
   /\bcan help you with\b/i,
 ];
 
-const REPORT_START = "REPORT_START";
-const REPORT_END = "REPORT_END";
+function toPlainTextReport(input: string): string {
+  return String(input || "")
+    .split("\n")
+    .map((line) => {
+      // Keep content readable while removing markdown-specific decorators.
+      let clean = line;
+      clean = clean.replace(/^>\s?/, "");
+      clean = clean.replace(/^\*\*(.+)\*\*$/, "$1");
+      clean = clean.replace(/\*\*(.*?)\*\*/g, "$1");
+      clean = clean.replace(/^REPORT_START\s*$/g, "");
+      clean = clean.replace(/^REPORT_END\s*$/g, "");
+      return clean;
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 function normalizeLine(text: string, maxLength = 220): string {
   const compact = String(text || "")
@@ -1405,8 +1420,6 @@ server.tool(
       const responseMarkdown = sanitizedLines.join("\n");
       validateReportOrThrow(responseMarkdown, { officialSourceUrls: processSpecificOfficialUrls.length > 0 ? processSpecificOfficialUrls : officialSourceUrls });
 
-      const envelopedReport = `${REPORT_START}\n${responseMarkdown}\n${REPORT_END}`;
-
       // Format for ChatGPT consumption
       const formattedResult = {
         query: result.query,
@@ -1436,7 +1449,7 @@ server.tool(
 
       // Return plain text markdown to maximize compatibility across clients.
       // Some clients ignore `markdown()` but display `text()` content reliably.
-      return text(envelopedReport);
+      return text(toPlainTextReport(responseMarkdown));
     } catch (error) {
       return text(`REQUEST_FAILED: MCP tool output unavailable or invalid.`);
     }
