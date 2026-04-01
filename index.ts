@@ -58,18 +58,69 @@ const BANNED_OUTPUT_PATTERNS = [
 ];
 
 function toPlainTextReport(input: string): string {
-  return String(input || "")
-    .split("\n")
-    .map((line) => {
-      // Keep content readable while removing markdown-specific decorators.
-      let clean = line;
-      clean = clean.replace(/^>\s?/, "");
-      clean = clean.replace(/^\*\*(.+)\*\*$/, "$1");
-      clean = clean.replace(/\*\*(.*?)\*\*/g, "$1");
-      clean = clean.replace(/^REPORT_START\s*$/g, "");
-      clean = clean.replace(/^REPORT_END\s*$/g, "");
-      return clean;
-    })
+  const allowedSections = [
+    "About This Service",
+    "Requirements & Process",
+    "Official Links",
+    "Related Articles (Context Only)",
+    "Related YouTube Videos",
+    "Key Insights",
+    "Recommended Next Steps",
+  ];
+
+  const normalizeHeading = (line: string): string =>
+    line.replace(/^\*\*(.+)\*\*$/, "$1").trim();
+
+  const isNoiseUrl = (url: string): boolean => {
+    const lower = url.toLowerCase();
+    if (!/^https?:\/\//.test(lower)) return true;
+
+    const blockedHosts = ["duckduckgo.com", "w3.org"];
+    if (blockedHosts.some((host) => lower.includes(host))) return true;
+
+    if (/\.(css|js|png|jpg|jpeg|gif|svg|ico|xml)(\?|$)/.test(lower)) return true;
+    if (/(\/favicon\.ico|\/opensearch|\/feedback|\/html\/)/.test(lower)) return true;
+
+    return false;
+  };
+
+  const extractUrl = (line: string): string | null => {
+    const match = line.match(/https?:\/\/\S+/);
+    return match ? match[0].replace(/[),.;]+$/, "") : null;
+  };
+
+  const lines = String(input || "").split("\n");
+  const output: string[] = [];
+  let keepSection = false;
+
+  for (const raw of lines) {
+    let clean = raw;
+    clean = clean.replace(/^>\s?/, "");
+    clean = clean.replace(/^REPORT_START\s*$/g, "");
+    clean = clean.replace(/^REPORT_END\s*$/g, "");
+
+    const headingMatch = clean.match(/^\*\*(.+)\*\*$/);
+    if (headingMatch) {
+      const heading = normalizeHeading(clean);
+      keepSection = allowedSections.some((prefix) => heading.startsWith(prefix));
+      if (keepSection) {
+        output.push(heading);
+        output.push("");
+      }
+      continue;
+    }
+
+    if (!keepSection) continue;
+
+    clean = clean.replace(/\*\*(.*?)\*\*/g, "$1");
+
+    const maybeUrl = extractUrl(clean);
+    if (maybeUrl && isNoiseUrl(maybeUrl)) continue;
+
+    output.push(clean);
+  }
+
+  return output
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
