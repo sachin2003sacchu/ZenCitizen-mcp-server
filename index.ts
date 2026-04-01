@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { MCPServer, object, text, widget, markdown } from "mcp-use/server";
+import { MCPServer, object, text, markdown } from "mcp-use/server";
 import { z } from "zod";
 import { searchYouTube, searchTwitter, searchBothPlatforms, researchGovernmentQuery } from "./api.js";
 import type { YouTubeResults, TwitterResults } from "./resources/api-results/types.js";
@@ -915,25 +915,21 @@ server.tool(
     schema: z.object({
       query: z.string().describe("Search query for YouTube videos"),
     }),
-    widget: {
-      name: "api-results",
-      invoking: "Searching YouTube...",
-      invoked: "YouTube results loaded",
-    },
   },
   async ({ query }: { query: string }) => {
     try {
       const results = await searchYouTube(query);
-      return widget({
-        props: {
-          query,
-          youtubeResults: results,
-          twitterResults: null,
-        },
-        output: text(
-          `Found ${results.videos.length} YouTube videos and ${results.comments.length} comments for "${query}"`
-        ),
-      });
+      const lines: string[] = [
+        `YouTube search results for: ${query}`,
+        `Videos: ${results.videos.length}`,
+        `Comments: ${results.comments.length}`,
+      ];
+      const topVideos = results.videos.slice(0, 5);
+      if (topVideos.length > 0) {
+        lines.push("Top videos:");
+        topVideos.forEach((v, i) => lines.push(`${i + 1}. ${v.title} | ${v.url}`));
+      }
+      return text(lines.join("\n"));
     } catch (error) {
       return text(`Error searching YouTube: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -952,23 +948,20 @@ server.tool(
     schema: z.object({
       query: z.string().describe("Search query for Twitter/X"),
     }),
-    widget: {
-      name: "api-results",
-      invoking: "Searching Twitter...",
-      invoked: "Twitter results loaded",
-    },
   },
   async ({ query }: { query: string }) => {
     try {
       const results = await searchTwitter(query);
-      return widget({
-        props: {
-          query,
-          youtubeResults: null,
-          twitterResults: results,
-        },
-        output: text(`Found ${results.count} tweets for "${query}"`),
-      });
+      const lines: string[] = [
+        `Twitter search results for: ${query}`,
+        `Tweets: ${results.count}`,
+      ];
+      const topTweets = results.tweets.slice(0, 5);
+      if (topTweets.length > 0) {
+        lines.push("Top tweets:");
+        topTweets.forEach((t, i) => lines.push(`${i + 1}. ${t.text.replace(/\s+/g, " ").slice(0, 180)} | ${t.url}`));
+      }
+      return text(lines.join("\n"));
     } catch (error) {
       return text(`Error searching Twitter: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -987,11 +980,6 @@ server.tool(
     schema: z.object({
       query: z.string().describe("Search query to find content on YouTube and Twitter"),
     }),
-    widget: {
-      name: "api-results",
-      invoking: "Searching YouTube and Twitter...",
-      invoked: "Results loaded",
-    },
   },
   async ({ query }: { query: string }) => {
     try {
@@ -1000,17 +988,27 @@ server.tool(
       const errorMsg = errors.length > 0 ? `\nWarnings: ${errors.join(", ")}` : "";
       const youtubeCount = youtube?.videos.length ?? 0;
       const twitterCount = twitter?.tweets.length ?? 0;
-      
-      return widget({
-        props: {
-          query,
-          youtubeResults: youtube || null,
-          twitterResults: twitter || null,
-        },
-        output: text(
-          `Found ${youtubeCount} YouTube videos and ${twitterCount} tweets for "${query}"${errorMsg}`
-        ),
-      });
+
+      const lines: string[] = [
+        `Combined search results for: ${query}`,
+        `YouTube videos: ${youtubeCount}`,
+        `Twitter tweets: ${twitterCount}`,
+      ];
+
+      const topYouTube = (youtube?.videos || []).slice(0, 3);
+      if (topYouTube.length > 0) {
+        lines.push("Top YouTube videos:");
+        topYouTube.forEach((v, i) => lines.push(`${i + 1}. ${v.title} | ${v.url}`));
+      }
+
+      const topTweets = (twitter?.tweets || []).slice(0, 3);
+      if (topTweets.length > 0) {
+        lines.push("Top tweets:");
+        topTweets.forEach((t, i) => lines.push(`${i + 1}. ${t.text.replace(/\s+/g, " ").slice(0, 180)} | ${t.url}`));
+      }
+
+      if (errorMsg) lines.push(errorMsg.trim());
+      return text(lines.join("\n"));
     } catch (error) {
       return text(`Error searching: ${error instanceof Error ? error.message : String(error)}`);
     }
