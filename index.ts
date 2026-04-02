@@ -1041,6 +1041,40 @@ server.tool(
         lines.push("Top videos:");
         topVideos.forEach((v, i) => lines.push(`${i + 1}. ${v.title} | ${v.url}`));
       }
+
+      const commentsByVideo = results.commentsByVideo || {};
+      const commentSections = topVideos
+        .map((video) => {
+          const videoComments = (commentsByVideo[video.id] || results.comments.filter((c) => c.videoId === video.id))
+            .filter((c) => normalizeLine(c.textDisplay, 220).length > 0)
+            .slice(0, 2);
+          return { video, comments: videoComments };
+        })
+        .filter((entry) => entry.comments.length > 0);
+
+      if (commentSections.length > 0) {
+        lines.push("Top comments from these videos:");
+        commentSections.forEach((entry, i) => {
+          lines.push(`${i + 1}. ${entry.video.title}`);
+          entry.comments.forEach((comment) => {
+            lines.push(
+              `   - ${comment.authorDisplayName}: \"${normalizeLine(comment.textDisplay, 180)}\" (${comment.likeCount} likes)`
+            );
+          });
+        });
+      } else if (results.comments.length > 0) {
+        // Fallback when comments cannot be mapped to videos (e.g. missing videoId in upstream payload).
+        lines.push("Top comments:");
+        results.comments
+          .filter((c) => normalizeLine(c.textDisplay, 220).length > 0)
+          .slice(0, 5)
+          .forEach((comment, i) => {
+            lines.push(
+              `${i + 1}. ${comment.authorDisplayName}: \"${normalizeLine(comment.textDisplay, 180)}\" (${comment.likeCount} likes)`
+            );
+          });
+      }
+
       return text(lines.join("\n"));
     } catch (error) {
       return text(`Error searching YouTube: ${error instanceof Error ? error.message : String(error)}`);
@@ -1099,11 +1133,13 @@ server.tool(
       
       const errorMsg = errors.length > 0 ? `\nWarnings: ${errors.join(", ")}` : "";
       const youtubeCount = youtube?.videos.length ?? 0;
+      const youtubeCommentCount = youtube?.comments.length ?? 0;
       const twitterCount = twitter?.tweets.length ?? 0;
 
       const lines: string[] = [
         `Combined search results for: ${query}`,
         `YouTube videos: ${youtubeCount}`,
+        `YouTube comments: ${youtubeCommentCount}`,
         `Twitter tweets: ${twitterCount}`,
       ];
 
@@ -1111,6 +1147,38 @@ server.tool(
       if (topYouTube.length > 0) {
         lines.push("Top YouTube videos:");
         topYouTube.forEach((v, i) => lines.push(`${i + 1}. ${v.title} | ${v.url}`));
+      }
+
+      const ytCommentsByVideo = youtube?.commentsByVideo || {};
+      const youtubeCommentSections = topYouTube
+        .map((video) => {
+          const comments = (ytCommentsByVideo[video.id] || (youtube?.comments || []).filter((c) => c.videoId === video.id))
+            .filter((c) => normalizeLine(c.textDisplay, 220).length > 0)
+            .slice(0, 2);
+          return { video, comments };
+        })
+        .filter((entry) => entry.comments.length > 0);
+
+      if (youtubeCommentSections.length > 0) {
+        lines.push("Top YouTube comments:");
+        youtubeCommentSections.forEach((entry, i) => {
+          lines.push(`${i + 1}. ${entry.video.title}`);
+          entry.comments.forEach((comment) => {
+            lines.push(
+              `   - ${comment.authorDisplayName}: \"${normalizeLine(comment.textDisplay, 180)}\" (${comment.likeCount} likes)`
+            );
+          });
+        });
+      } else if ((youtube?.comments || []).length > 0) {
+        lines.push("Top YouTube comments:");
+        (youtube?.comments || [])
+          .filter((c) => normalizeLine(c.textDisplay, 220).length > 0)
+          .slice(0, 5)
+          .forEach((comment, i) => {
+            lines.push(
+              `${i + 1}. ${comment.authorDisplayName}: \"${normalizeLine(comment.textDisplay, 180)}\" (${comment.likeCount} likes)`
+            );
+          });
       }
 
       const topTweets = (twitter?.tweets || []).slice(0, 3);
