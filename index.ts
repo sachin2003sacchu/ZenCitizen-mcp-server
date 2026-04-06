@@ -314,6 +314,10 @@ function buildQueryTerms(query: string): string[] {
     ["passport", "visa", "medical", "application", "form", "document", "renewal", "validity"].forEach((t) => base.add(t));
   }
 
+  if (/(marriage|certificate|kaveri|sub-registrar|sro|witness|esign)/.test(lower)) {
+    ["marriage", "certificate", "kaveri", "subregistrar", "sro", "witness", "esign", "karnataka"].forEach((t) => base.add(t));
+  }
+
   return Array.from(base);
 }
 
@@ -660,8 +664,9 @@ async function fetchWithTimeout(
 
 async function fetchArticlesFromWeb(query: string): Promise<{ rankedArticles: RankedSource[]; fetchedUrls: string[] }> {
   const searchQueries = [
-    `${query} site:hindustantimes.com OR site:thehindu.com OR site:timesofindia.indiatimes.com OR site:deccanherald.com OR site:prajavani.net OR site:vijaykarnataka.com OR site:kannadaprabha.com OR site:udayavani.com`,
+    `${query} site:hindustantimes.com OR site:thehindu.com OR site:timesofindia.indiatimes.com OR site:deccanherald.com OR site:prajavani.net OR site:vijaykarnataka.com OR site:kannadaprabha.com OR site:udayavani.com OR site:zencitizen.in`,
     `${query} explained rules validity apply process`,
+    `${query} kaveri marriage certificate witnesses esign net banking sro`,
   ];
 
   const collected = new Map<string, RankedSource>();
@@ -1345,13 +1350,18 @@ server.tool(
       }
 
       // Section: Requirements
-      if (result.governmentService && result.governmentService.requirements.length > 0) {
+      if (result.governmentService && ((result.governmentService.requirements || []).length > 0 || (result.governmentService.fees || []).length > 0)) {
         const svc = result.governmentService;
         sections.push(`**Requirements & Process**`);
         sections.push(``);
         sections.push(`Information:`);
         const reqSource = processSpecificOfficialUrls[0] || officialSourceUrls[0];
         if (svc.processingTime) sections.push(formatClaimWithSource(`Processing Time: ${svc.processingTime}`, reqSource));
+        if (svc.fees && svc.fees.length > 0) {
+          svc.fees.slice(0, 4).forEach((feeLine: string) => {
+            sections.push(formatClaimWithSource(`Fee detail: ${normalizeLine(feeLine, 220)}`, reqSource));
+          });
+        }
         svc.requirements.forEach((req: string) => sections.push(`- ${formatClaimWithSource(req, reqSource)}`));
         sections.push(``);
         const reqLinks = processSpecificOfficialUrls

@@ -72,6 +72,7 @@ export interface GovernmentService {
   category: string;
   state?: string;
   requirements: string[];
+  fees?: string[];
   processingTime: string;
   relatedServices: string[];
   // Optional list of document/form URLs discovered on official sites

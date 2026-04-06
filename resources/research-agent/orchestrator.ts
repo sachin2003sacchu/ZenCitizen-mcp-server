@@ -314,6 +314,7 @@ export async function compileResearchResult(
         [query, inferred.serviceName, ...(inferred.keywords || [])]
       ),
       requirements: extractRequirementsFromScraped(inferred.scrapedInfo),
+      fees: extractFeesFromScraped(inferred.scrapedInfo),
       processingTime: extractProcessingTimeFromScraped(inferred.scrapedInfo),
       relatedServices: [],
       state: inferred.state,
@@ -485,4 +486,16 @@ function extractProcessingTimeFromScraped(scrapedInfo?: ScrapedPageInfo[]): stri
     .filter(Boolean);
   
   return times[0] || "Varies by service";
+}
+
+function extractFeesFromScraped(scrapedInfo?: ScrapedPageInfo[]): string[] {
+  if (!scrapedInfo?.length) return [];
+
+  const collected = scrapedInfo
+    .flatMap((info) => info.fees || [])
+    .map((line) => String(line || "").replace(/\s+/g, " ").trim())
+    .filter((line) => line.length >= 8 && line.length <= 220)
+    .filter((line) => /(fee|fees|charge|charges|cost|payment|₹|rs\.?\s*\d+)/i.test(line));
+
+  return [...new Set(collected)].slice(0, 8);
 }

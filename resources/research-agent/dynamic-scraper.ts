@@ -20,6 +20,7 @@ export interface ScrapedPageInfo {
   description: string;
   documents: ScrapedDocument[];
   requirements?: string[];
+  fees?: string[];
   processingTime?: string;
   steps?: string[];
   contactInfo?: string;
@@ -61,6 +62,7 @@ export async function scrapeGovernmentPortal(url: string): Promise<ScrapedPageIn
     // Extract key information
     const documents = extractDocuments($, url);
     const requirements = extractRequirements($);
+    const fees = extractFeeInfo($);
     const processingTime = extractProcessingTime($);
     const steps = extractSteps($);
     const contactInfo = extractContactInfo($);
@@ -79,6 +81,7 @@ export async function scrapeGovernmentPortal(url: string): Promise<ScrapedPageIn
       description: extractDescription($),
       documents,
       requirements: requirements.length > 0 ? requirements : undefined,
+      fees: fees.length > 0 ? fees : undefined,
       processingTime: processingTime || undefined,
       steps: steps.length > 0 ? steps : undefined,
       contactInfo: contactInfo || undefined,
@@ -153,62 +156,69 @@ function extractDocuments($: any, baseUrl: string): ScrapedDocument[] {
  * Extract requirements section
  */
 function extractRequirements($: any): string[] {
-  const requirements: string[] = [];
+  const requirementHeadings = /(requirement|eligib|document(s)? needed|mandatory|proof|witness|address proof|age proof)/i;
+  const raw: string[] = [];
 
-  // Look for requirements heading
-  const requirementsSection = $("*").filter((_i: number, el: any) => {
-    const text = $(el).text().toLowerCase();
-    return text.includes("requirement") || text.includes("document needed");
-  }).first().parent();
+  // Collect items under heading-like blocks first.
+  $("h1, h2, h3, h4, strong, b").each((_i: number, elem: any) => {
+    const heading = $(elem).text().trim();
+    if (!requirementHeadings.test(heading)) return;
 
-  if (requirementsSection.length > 0) {
-    requirementsSection
-      .find("li, p, div")
-      .slice(0, 10)
-      .each((_i: number, elem: any) => {
-        const text = $(elem).text().trim();
-        if (text.length > 10 && text.length < 200) {
-          requirements.push(text);
-        }
-      });
-  }
-
-  // Also search for bullet points near "require" keywords
-  $("*").filter((_i: number, el: any) => {
-    const text = $(el).text().toLowerCase();
-    return text.includes("require");
-  }).each((_i: number, elem: any) => {
-    $(elem).find("li").slice(0, 5).each((_j: number, li: any) => {
-      const text = $(li).text().trim();
-      if (text.length > 5 && requirements.length < 10) {
-        requirements.push(text);
-      }
+    const section = $(elem).parent();
+    section.find("li, p").slice(0, 16).each((_j: number, item: any) => {
+      const text = normalizeExtractedText($(item).text());
+      if (isUsefulRequirementLine(text)) raw.push(text);
     });
   });
 
-  return [...new Set(requirements)].slice(0, 8);  // Deduplicate, limit to 8
+  // Fallback: pick requirement-looking list lines from the page.
+  if (raw.length === 0) {
+    $("li, p").slice(0, 300).each((_i: number, elem: any) => {
+      const text = normalizeExtractedText($(elem).text());
+      if (!isUsefulRequirementLine(text)) return;
+      if (/(require|mandatory|must|address proof|age proof|witness|document|certificate)/i.test(text)) {
+        raw.push(text);
+      }
+    });
+  }
+
+  return dedupeLines(raw).slice(0, 12);
+}
+
+function extractFeeInfo($: any): string[] {
+  const lines: string[] = [];
+
+  $("li, p, td").slice(0, 500).each((_i: number, elem: any) => {
+    const text = normalizeExtractedText($(elem).text());
+    if (!text) return;
+    if (!/(fee|fees|charge|charges|cost|payment|₹|rs\.?\s*\d+)/i.test(text)) return;
+    if (text.length < 8 || text.length > 220) return;
+    lines.push(text);
+  });
+
+  return dedupeLines(lines).slice(0, 8);
 }
 
 /**
  * Extract processing time
  */
 function extractProcessingTime($: any): string | null {
-  // Search for processing time mentions
-  const pageText = $.text().toLowerCase();
-  
-  const patterns = [
-    /processing\s+time[:\s]+([^\n.]+)/i,
-    /takes?\s+(\d+(?:\s+to\s+\d+)?)\s*(?:days?|weeks?|months?|hours?)/i,
-    /turnaround\s+time[:\s]+([^\n.]+)/i,
-    /duration[:\s]+([^\n.]+)/i,
-    /(\d+(?:\s+to\s+\d+)?)\s*(?:days?|weeks?|months?|hours?)/i
-  ];
+  const candidates: string[] = [];
+  const timeSignal = /(processing\s*time|timeline|turnaround|takes?|working\s*day|approved|verification|issued|download)/i;
+  const durationSignal = /(\d+\s*(?:-|to)?\s*\d*\s*(?:working\s*)?(?:day|days|week|weeks|month|months|hour|hours))/i;
 
-  for (const pattern of patterns) {
-    const match = pageText.match(pattern);
-    if (match && match[1]) {
-      return match[1].trim();
+  $("li, p, td").slice(0, 500).each((_i: number, elem: any) => {
+    const text = normalizeExtractedText($(elem).text());
+    if (!text || text.length > 240) return;
+    if (!timeSignal.test(text) && !durationSignal.test(text)) return;
+    const match = text.match(durationSignal);
+    if (match?.[1]) {
+      candidates.push(`${text}`);
     }
+  });
+
+  if (candidates.length > 0) {
+    return dedupeLines(candidates)[0];
   }
 
   return null;
@@ -360,6 +370,32 @@ function resolveUrl(href: string, pageUrl: string): string {
   } catch (err) {
     return "";
   }
+}
+
+function normalizeExtractedText(text: string): string {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
+
+function dedupeLines(lines: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const line of lines) {
+    const clean = normalizeExtractedText(line);
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(clean);
+  }
+  return out;
+}
+
+function isUsefulRequirementLine(text: string): boolean {
+  if (!text) return false;
+  if (text.length < 10 || text.length > 220) return false;
+  if (/^(login|subscribe|read more|share|copyright|privacy|terms)$/i.test(text)) return false;
+  if (!/[a-z]/i.test(text)) return false;
+  return true;
 }
 
 /**
