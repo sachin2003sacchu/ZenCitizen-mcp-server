@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { MCPServer, object, text, markdown } from "mcp-use/server";
 import { z } from "zod";
-import { searchYouTube, searchTwitter, searchBothPlatforms, researchGovernmentQuery } from "./api.js";
+import { searchYouTube, searchTwitter, researchGovernmentQuery } from "./api.js";
 import type { YouTubeResults, TwitterResults } from "./resources/api-results/types.js";
 
 function buildActionLinks(service?: { officialLinks?: string[]; documentLinks?: string[] }) {
@@ -1115,82 +1115,41 @@ server.tool(
 );
 
 /**
- * COMBINED SEARCH TOOL
- * Searches both YouTube and Twitter for a query
- * Requires: YOUTUBE_API_KEY and TWITTER_BEARER_TOKEN environment variables
+ * ARTICLE SEARCH TOOL
+ * Searches trusted news/article links related to a query
  */
 server.tool(
   {
-    name: "search-all",
-    description: "Search YouTube videos, comments, and Twitter tweets for a specific query across both platforms",
+    name: "search-article",
+    description: "Search article links related to a query with trust ranking",
     schema: z.object({
-      query: z.string().describe("Search query to find content on YouTube and Twitter"),
+      query: z.string().describe("Search query to find relevant article links"),
     }),
   },
   async ({ query }: { query: string }) => {
     try {
-      const { youtube, twitter, errors } = await searchBothPlatforms(query);
-      
-      const errorMsg = errors.length > 0 ? `\nWarnings: ${errors.join(", ")}` : "";
-      const youtubeCount = youtube?.videos.length ?? 0;
-      const youtubeCommentCount = youtube?.comments.length ?? 0;
-      const twitterCount = twitter?.tweets.length ?? 0;
+      const result = await fetchArticlesFromWeb(query);
+      const topArticles = result.rankedArticles.slice(0, 6);
 
       const lines: string[] = [
-        `Combined search results for: ${query}`,
-        `YouTube videos: ${youtubeCount}`,
-        `YouTube comments: ${youtubeCommentCount}`,
-        `Twitter tweets: ${twitterCount}`,
+        `Article search results for: ${query}`,
+        `Articles found: ${topArticles.length}`,
       ];
 
-      const topYouTube = (youtube?.videos || []).slice(0, 3);
-      if (topYouTube.length > 0) {
-        lines.push("Top YouTube videos:");
-        topYouTube.forEach((v, i) => lines.push(`${i + 1}. ${v.title} | ${v.url}`));
-      }
-
-      const ytCommentsByVideo = youtube?.commentsByVideo || {};
-      const youtubeCommentSections = topYouTube
-        .map((video) => {
-          const comments = (ytCommentsByVideo[video.id] || (youtube?.comments || []).filter((c) => c.videoId === video.id))
-            .filter((c) => normalizeLine(c.textDisplay, 220).length > 0)
-            .slice(0, 2);
-          return { video, comments };
-        })
-        .filter((entry) => entry.comments.length > 0);
-
-      if (youtubeCommentSections.length > 0) {
-        lines.push("Top YouTube comments:");
-        youtubeCommentSections.forEach((entry, i) => {
-          lines.push(`${i + 1}. ${entry.video.title}`);
-          entry.comments.forEach((comment) => {
-            lines.push(
-              `   - ${comment.authorDisplayName}: \"${normalizeLine(comment.textDisplay, 180)}\" (${comment.likeCount} likes)`
-            );
-          });
+      if (topArticles.length > 0) {
+        lines.push("Top articles:");
+        topArticles.forEach((article, i) => {
+          lines.push(
+            `${i + 1}. ${article.title} | Trust Rank: ${article.rank}/100 (${article.tier.toUpperCase()}) | ${article.url}`
+          );
         });
-      } else if ((youtube?.comments || []).length > 0) {
-        lines.push("Top YouTube comments:");
-        (youtube?.comments || [])
-          .filter((c) => normalizeLine(c.textDisplay, 220).length > 0)
-          .slice(0, 5)
-          .forEach((comment, i) => {
-            lines.push(
-              `${i + 1}. ${comment.authorDisplayName}: \"${normalizeLine(comment.textDisplay, 180)}\" (${comment.likeCount} likes)`
-            );
-          });
+      } else {
+        lines.push("No reliable article links were found for this query.");
       }
 
-      const topTweets = (twitter?.tweets || []).slice(0, 3);
-      if (topTweets.length > 0) {
-        lines.push("Top tweets:");
-        topTweets.forEach((t, i) => lines.push(`${i + 1}. ${t.text.replace(/\s+/g, " ").slice(0, 180)} | ${t.url}`));
-      }
-
-      if (errorMsg) lines.push(errorMsg.trim());
       return text(lines.join("\n"));
     } catch (error) {
-      return text(`Error searching: ${error instanceof Error ? error.message : String(error)}`);
+      return text(`Error searching articles: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 );
