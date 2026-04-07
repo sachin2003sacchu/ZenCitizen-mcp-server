@@ -61,7 +61,6 @@ function toPlainTextReport(input: string): string {
   const allowedSections = [
     "About This Service",
     "Requirements & Process",
-    "Field Reality Checklist (15-Point Gap Coverage)",
     "Verified Extra Details",
     "Official Links",
     "Related Articles (Context Only)",
@@ -910,6 +909,7 @@ function buildVerifiedExtraDetails(input: {
   processingTime?: string;
   officialSourceUrls: string[];
   processSpecificOfficialUrls: string[];
+  fieldRealityLines?: string[];
 }): string[] {
   const primarySource = input.processSpecificOfficialUrls[0] || input.officialSourceUrls[0];
   const lines: string[] = [];
@@ -930,6 +930,17 @@ function buildVerifiedExtraDetails(input: {
 
   if (timeline) {
     lines.push(`Extracted processing-time line: ${timeline}`);
+  }
+
+  if (input.fieldRealityLines && input.fieldRealityLines.length > 0) {
+    lines.push("Verified field notes extracted from retrieved context:");
+    input.fieldRealityLines.slice(0, 15).forEach((item) => {
+      const cleaned = normalizeLine(item, 260).replace(/^\d+\.\s*/, "");
+      const separatorIndex = cleaned.indexOf(": ");
+      const label = separatorIndex >= 0 ? cleaned.slice(0, separatorIndex) : cleaned;
+      const value = separatorIndex >= 0 ? cleaned.slice(separatorIndex + 2) : "Not explicitly found in retrieved sources.";
+      lines.push(`${label}: ${value}`);
+    });
   }
 
   if (lines.length === 0) {
@@ -1039,7 +1050,7 @@ function validateReportOrThrow(
   const requiredSectionPrefixes = [
     "**About This Service",
     "**Requirements & Process**",
-    "**Field Reality Checklist (15-Point Gap Coverage)**",
+    "**Verified Extra Details**",
     "**Official Links**",
     "**Related Articles (Context Only)**",
     "**Related YouTube Videos**",
@@ -1308,8 +1319,8 @@ Output Rules:
 9. Output must always include a "Related YouTube Videos" section and list direct YouTube URLs in Information and Sources.
 10. Add "Related Articles (Context Only)" after Official Links with trust ranking (Tier 1 highest), prioritizing major news domains (Hindustan Times, The Hindu, Times of India, Deccan Herald, and Kannada newspapers).
 11. Immediately after "Related YouTube Videos", add links-only sections: "Articles Related — <query>" and "YouTube Related — <query>". In those two sections, list only live URLs in Information and Sources (no summaries).
-12. Always include a section named "Field Reality Checklist (15-Point Gap Coverage)" with these items: offices/order, online-vs-offline recommendation, multi-stage breakdown, exact fee, hidden costs, complete documents, format specifics, realistic timeline, office timings, bribe warning, office-by-office expectations, rejection reasons, tracking method, delivery method, grievance/escalation.
-13. If any checklist item is unavailable, explicitly write "Not explicitly found in retrieved sources" for that item.
+12. Always include a "Verified Extra Details" section that surfaces any additional extracted facts such as office details, route, stages, fees, documents, format specifics, timeline, timings, risks, rejection reasons, tracking, delivery, and escalation when they are present in retrieved sources.
+13. If any detail is unavailable, explicitly write "Not explicitly found in retrieved sources" for that detail instead of guessing.
 14. Output must end with factual report sections only.`;
 
 server.tool(
@@ -1504,8 +1515,8 @@ server.tool(
         addSources(reqLinks.length > 0 ? reqLinks : (processSpecificOfficialUrls.length > 0 ? processSpecificOfficialUrls : officialSourceUrls));
       }
 
-      // Section: Mandatory gap coverage for field reality details
-      sections.push(`**Field Reality Checklist (15-Point Gap Coverage)**`);
+      // Section: Additional strict-evidence details (no inference)
+      sections.push(`**Verified Extra Details**`);
       sections.push(``);
       sections.push(`Information:`);
       const checklistLines = buildFieldRealityChecklist({
@@ -1516,20 +1527,13 @@ server.tool(
         processSpecificOfficialUrls,
         keyPoints: topKeyPoints,
       });
-      checklistLines.forEach((line) => sections.push(`- ${line}`));
-      sections.push(``);
-      addSources(processSpecificOfficialUrls.length > 0 ? processSpecificOfficialUrls : (officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls));
-
-      // Section: Additional strict-evidence details (no inference)
-      sections.push(`**Verified Extra Details**`);
-      sections.push(``);
-      sections.push(`Information:`);
       const extraLines = buildVerifiedExtraDetails({
         requirements: result.governmentService?.requirements || [],
         fees: result.governmentService?.fees || [],
         processingTime: result.governmentService?.processingTime,
         officialSourceUrls,
         processSpecificOfficialUrls,
+        fieldRealityLines: checklistLines,
       });
       extraLines.forEach((line) => sections.push(`- ${line}`));
       sections.push(``);
