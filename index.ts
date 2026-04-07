@@ -62,6 +62,7 @@ function toPlainTextReport(input: string): string {
     "About This Service",
     "Requirements & Process",
     "Field Reality Checklist (15-Point Gap Coverage)",
+    "Verified Extra Details",
     "Official Links",
     "Related Articles (Context Only)",
     "Related YouTube Videos",
@@ -885,15 +886,15 @@ function buildFieldRealityChecklist(input: {
   const out: string[] = [];
 
   out.push(`1. Correct office(s) to visit: ${officeLine || "Not explicitly listed in retrieved sources for this query."}`);
-  out.push(`2. Recommended route (online/offline): ${applyLink ? `Online route found: ${applyLink}. Offline route details are ${officeLine ? "partially indicated" : "not explicitly confirmed"}.` : "No verified online apply link found; verify local offline route in official links."}`);
+  out.push(`2. Recommended route (online/offline): ${applyLink ? `Verified online route link: ${applyLink}` : "Not explicitly found in retrieved sources."}`);
   out.push(`3. Multi-stage process breakdown: ${stageLine || "Distinct stages (verification/payment/certificate) were not explicitly broken out in retrieved sources."}`);
   out.push(`4. Exact government fee: ${exactFee || "Exact fee amount not explicitly found in retrieved official data."}`);
   out.push(`5. Hidden/additional costs: ${hiddenCostLine || "No verified mention of stamp/notary/affidavit/add-on costs in retrieved sources."}`);
-  out.push(`6. Complete document list: ${docList.length > 0 ? docList.join("; ") : "Complete document list not available in retrieved data."}`);
+  out.push(`6. Complete document list: ${docList.length > 0 ? docList.join("; ") : "Not explicitly found in retrieved sources."}`);
   out.push(`7. Document format specifics: ${formatLine || "No explicit file format/size/notarization specification found in retrieved sources."}`);
-  out.push(`8. Realistic timeline: ${timeline || "No explicit processing timeline found in retrieved official data."}`);
+  out.push(`8. Realistic timeline: ${timeline ? `Official timeline found: ${timeline}. Practical on-ground timeline was not explicitly found in retrieved sources.` : "Not explicitly found in retrieved sources."}`);
   out.push(`9. Office hours and counter timings: ${officeHoursLine || "Office-hour details were not found in retrieved sources."}`);
-  out.push(`10. Bribe solicitation warning: ${bribeLine || "No verified bribe-related signal in retrieved sources. Process should be followed through official channels only."}`);
+  out.push(`10. Bribe solicitation warning: ${bribeLine || "Not explicitly found in retrieved sources."}`);
   out.push(`11. What happens at each office: ${perOfficeLine || "Per-office handoff details were not explicitly documented in retrieved data."}`);
   out.push(`12. Common rejection/return reasons: ${rejectionLine || "No explicit rejection reasons found in retrieved sources."}`);
   out.push(`13. How to track application: ${statusLikeUrl || helpLink || "No explicit status-tracking portal identified in retrieved links."}`);
@@ -901,6 +902,41 @@ function buildFieldRealityChecklist(input: {
   out.push(`15. Grievance redressal and escalation: ${helpLink ? `Official grievance/help link found: ${helpLink}` : "Sakala grievance path or RTI escalation details were not explicitly present in retrieved sources."}`);
 
   return out.map((line) => (primarySource ? formatClaimWithSource(line, primarySource) : line));
+}
+
+function buildVerifiedExtraDetails(input: {
+  requirements: string[];
+  fees: string[];
+  processingTime?: string;
+  officialSourceUrls: string[];
+  processSpecificOfficialUrls: string[];
+}): string[] {
+  const primarySource = input.processSpecificOfficialUrls[0] || input.officialSourceUrls[0];
+  const lines: string[] = [];
+
+  const cleanedReqs = input.requirements.map((x) => normalizeLine(x, 220)).filter(Boolean).slice(0, 6);
+  const cleanedFees = input.fees.map((x) => normalizeLine(x, 220)).filter(Boolean).slice(0, 4);
+  const timeline = input.processingTime ? normalizeLine(input.processingTime, 160) : "";
+
+  if (cleanedReqs.length > 0) {
+    lines.push("Extracted requirement/doc lines from retrieved official context:");
+    cleanedReqs.forEach((r, i) => lines.push(`${i + 1}. ${r}`));
+  }
+
+  if (cleanedFees.length > 0) {
+    lines.push("Extracted fee lines from retrieved official context:");
+    cleanedFees.forEach((f, i) => lines.push(`${i + 1}. ${f}`));
+  }
+
+  if (timeline) {
+    lines.push(`Extracted processing-time line: ${timeline}`);
+  }
+
+  if (lines.length === 0) {
+    lines.push("No additional verified structured details were available in the retrieved context.");
+  }
+
+  return lines.map((line) => (primarySource ? formatClaimWithSource(line, primarySource) : line));
 }
 
 function buildFallbackInsights(input: {
@@ -1481,6 +1517,21 @@ server.tool(
         keyPoints: topKeyPoints,
       });
       checklistLines.forEach((line) => sections.push(`- ${line}`));
+      sections.push(``);
+      addSources(processSpecificOfficialUrls.length > 0 ? processSpecificOfficialUrls : (officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls));
+
+      // Section: Additional strict-evidence details (no inference)
+      sections.push(`**Verified Extra Details**`);
+      sections.push(``);
+      sections.push(`Information:`);
+      const extraLines = buildVerifiedExtraDetails({
+        requirements: result.governmentService?.requirements || [],
+        fees: result.governmentService?.fees || [],
+        processingTime: result.governmentService?.processingTime,
+        officialSourceUrls,
+        processSpecificOfficialUrls,
+      });
+      extraLines.forEach((line) => sections.push(`- ${line}`));
       sections.push(``);
       addSources(processSpecificOfficialUrls.length > 0 ? processSpecificOfficialUrls : (officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls));
 
