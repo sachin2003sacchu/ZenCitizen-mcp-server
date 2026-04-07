@@ -61,11 +61,15 @@ function toPlainTextReport(input: string): string {
   const allowedSections = [
     "About This Service",
     "Requirements & Process",
+    "Field Reality Checklist (15-Point Gap Coverage)",
     "Official Links",
     "Related Articles (Context Only)",
     "Related YouTube Videos",
+    "Community Discussion (Twitter/X)",
     "Key Insights",
     "Recommended Next Steps",
+    "Detailed Evidence Ledger",
+    "All Fetched Links",
   ];
 
   const normalizeHeading = (line: string): string =>
@@ -132,11 +136,11 @@ function toPlainTextReport(input: string): string {
     // Cap long list sections to improve parent-LLM readability.
     if (currentSection.startsWith("Related Articles") && /^\s*\d+\./.test(clean)) {
       articleCount += 1;
-      if (articleCount > 3) continue;
+      if (articleCount > 6) continue;
     }
     if (currentSection.startsWith("Related YouTube Videos") && /^\s*\d+\./.test(clean)) {
       videoCount += 1;
-      if (videoCount > 3) continue;
+      if (videoCount > 6) continue;
     }
 
     const maybeUrl = extractUrl(clean);
@@ -826,6 +830,79 @@ function buildUserFriendlyNextSteps(input: {
   return dedupeStrings(steps).slice(0, 7);
 }
 
+function findFirstMatchingLine(lines: string[], pattern: RegExp): string | undefined {
+  for (const line of lines) {
+    const cleaned = normalizeLine(line, 260);
+    if (!cleaned) continue;
+    if (pattern.test(cleaned.toLowerCase())) return cleaned;
+  }
+  return undefined;
+}
+
+function buildFieldRealityChecklist(input: {
+  query: string;
+  service?: {
+    requirements?: string[];
+    fees?: string[];
+    processingTime?: string;
+  };
+  actionLinks: Array<{ label: string; url: string; purpose: string }>;
+  officialSourceUrls: string[];
+  processSpecificOfficialUrls: string[];
+  keyPoints: Array<{ text: string }>;
+}): string[] {
+  const requirements = (input.service?.requirements || []).map((x) => normalizeLine(x, 260)).filter(Boolean);
+  const fees = (input.service?.fees || []).map((x) => normalizeLine(x, 220)).filter(Boolean);
+  const keyPointLines = (input.keyPoints || []).map((x) => normalizeLine(x.text, 260)).filter(Boolean);
+  const allEvidenceLines = [...requirements, ...fees, ...keyPointLines];
+
+  const primarySource =
+    input.processSpecificOfficialUrls[0] ||
+    input.officialSourceUrls[0] ||
+    input.actionLinks[0]?.url;
+
+  const applyLink = input.actionLinks.find((a) => a.purpose === "apply")?.url;
+  const helpLink = input.actionLinks.find((a) => a.purpose === "help")?.url;
+  const statusLikeUrl = input.actionLinks.find((a) => /(status|track|token|acknowledg|sakala|grievance)/i.test(a.url))?.url;
+
+  const officeLine = findFirstMatchingLine(allEvidenceLines, /(office|counter|taluk|tahsildar|bbmp|rto|sub-registrar|sro|nadakacheri|seva)/i);
+  const stageLine = findFirstMatchingLine(allEvidenceLines, /(stage|step|verification|payment|certificate|approval|biometric|upload|submission)/i);
+  const hiddenCostLine = findFirstMatchingLine(allEvidenceLines, /(stamp|stamp paper|notary|notar|affidavit|service charge|facilitation|xerox|photocopy)/i);
+  const formatLine = findFirstMatchingLine(allEvidenceLines, /(pdf|jpeg|jpg|png|kb|mb|a4|scan|notarized|notarised|self[- ]attested|original)/i);
+  const officeHoursLine = findFirstMatchingLine(allEvidenceLines, /(office hours|working hours|counter timing|timing|am|pm|monday|friday)/i);
+  const bribeLine = findFirstMatchingLine(allEvidenceLines, /(bribe|agent|middleman|extra cash|speed money)/i);
+  const perOfficeLine = findFirstMatchingLine(allEvidenceLines, /(visit|meet|submit at|verify at|counter|desk|office)/i);
+  const rejectionLine = findFirstMatchingLine(allEvidenceLines, /(reject|rejection|returned|resubmit|mismatch|incomplete|invalid)/i);
+  const deliveryLine = findFirstMatchingLine(allEvidenceLines, /(download|sms|physical copy|certificate issued|dispatch|delivered|mail)/i);
+
+  const exactFee = fees.find((line) => /(₹\s*\d[\d,]*|rs\.?\s*\d[\d,]*|inr\s*\d[\d,]*)/i.test(line));
+  const docList = requirements.slice(0, 8);
+
+  const timeline = input.service?.processingTime
+    ? normalizeLine(input.service.processingTime, 160)
+    : undefined;
+
+  const out: string[] = [];
+
+  out.push(`1. Correct office(s) to visit: ${officeLine || "Not explicitly listed in retrieved sources for this query."}`);
+  out.push(`2. Recommended route (online/offline): ${applyLink ? `Online route found: ${applyLink}. Offline route details are ${officeLine ? "partially indicated" : "not explicitly confirmed"}.` : "No verified online apply link found; verify local offline route in official links."}`);
+  out.push(`3. Multi-stage process breakdown: ${stageLine || "Distinct stages (verification/payment/certificate) were not explicitly broken out in retrieved sources."}`);
+  out.push(`4. Exact government fee: ${exactFee || "Exact fee amount not explicitly found in retrieved official data."}`);
+  out.push(`5. Hidden/additional costs: ${hiddenCostLine || "No verified mention of stamp/notary/affidavit/add-on costs in retrieved sources."}`);
+  out.push(`6. Complete document list: ${docList.length > 0 ? docList.join("; ") : "Complete document list not available in retrieved data."}`);
+  out.push(`7. Document format specifics: ${formatLine || "No explicit file format/size/notarization specification found in retrieved sources."}`);
+  out.push(`8. Realistic timeline: ${timeline || "No explicit processing timeline found in retrieved official data."}`);
+  out.push(`9. Office hours and counter timings: ${officeHoursLine || "Office-hour details were not found in retrieved sources."}`);
+  out.push(`10. Bribe solicitation warning: ${bribeLine || "No verified bribe-related signal in retrieved sources. Process should be followed through official channels only."}`);
+  out.push(`11. What happens at each office: ${perOfficeLine || "Per-office handoff details were not explicitly documented in retrieved data."}`);
+  out.push(`12. Common rejection/return reasons: ${rejectionLine || "No explicit rejection reasons found in retrieved sources."}`);
+  out.push(`13. How to track application: ${statusLikeUrl || helpLink || "No explicit status-tracking portal identified in retrieved links."}`);
+  out.push(`14. How output is delivered: ${deliveryLine || "Delivery mode (download/SMS/physical copy) not explicitly found in retrieved sources."}`);
+  out.push(`15. Grievance redressal and escalation: ${helpLink ? `Official grievance/help link found: ${helpLink}` : "Sakala grievance path or RTI escalation details were not explicitly present in retrieved sources."}`);
+
+  return out.map((line) => (primarySource ? formatClaimWithSource(line, primarySource) : line));
+}
+
 function buildFallbackInsights(input: {
   hasGovernmentService: boolean;
   requirementsCount: number;
@@ -926,6 +1003,7 @@ function validateReportOrThrow(
   const requiredSectionPrefixes = [
     "**About This Service",
     "**Requirements & Process**",
+    "**Field Reality Checklist (15-Point Gap Coverage)**",
     "**Official Links**",
     "**Related Articles (Context Only)**",
     "**Related YouTube Videos**",
@@ -1194,7 +1272,9 @@ Output Rules:
 9. Output must always include a "Related YouTube Videos" section and list direct YouTube URLs in Information and Sources.
 10. Add "Related Articles (Context Only)" after Official Links with trust ranking (Tier 1 highest), prioritizing major news domains (Hindustan Times, The Hindu, Times of India, Deccan Herald, and Kannada newspapers).
 11. Immediately after "Related YouTube Videos", add links-only sections: "Articles Related — <query>" and "YouTube Related — <query>". In those two sections, list only live URLs in Information and Sources (no summaries).
-12. Output must end with factual report sections only.`;
+12. Always include a section named "Field Reality Checklist (15-Point Gap Coverage)" with these items: offices/order, online-vs-offline recommendation, multi-stage breakdown, exact fee, hidden costs, complete documents, format specifics, realistic timeline, office timings, bribe warning, office-by-office expectations, rejection reasons, tracking method, delivery method, grievance/escalation.
+13. If any checklist item is unavailable, explicitly write "Not explicitly found in retrieved sources" for that item.
+14. Output must end with factual report sections only.`;
 
 server.tool(
   {
@@ -1338,6 +1418,10 @@ server.tool(
         sections.push(`Information:`);
         sections.push(svc.description);
         if (svc.category) sections.push(`Category: ${svc.category}${svc.state ? ` | State: ${svc.state}` : ``}`);
+        if (svc.officialLinks?.length) sections.push(`Official links found: ${svc.officialLinks.length}`);
+        if (svc.documentLinks?.length) sections.push(`Official document/form links found: ${svc.documentLinks.length}`);
+        if (svc.requirements?.length) sections.push(`Official requirements found: ${svc.requirements.length}`);
+        if (svc.fees?.length) sections.push(`Official fee notes found: ${svc.fees.length}`);
         sections.push(``);
         addSources(processSpecificOfficialUrls.length > 0 ? processSpecificOfficialUrls : (officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls));
       } else {
@@ -1383,6 +1467,22 @@ server.tool(
         sections.push(``);
         addSources(reqLinks.length > 0 ? reqLinks : (processSpecificOfficialUrls.length > 0 ? processSpecificOfficialUrls : officialSourceUrls));
       }
+
+      // Section: Mandatory gap coverage for field reality details
+      sections.push(`**Field Reality Checklist (15-Point Gap Coverage)**`);
+      sections.push(``);
+      sections.push(`Information:`);
+      const checklistLines = buildFieldRealityChecklist({
+        query,
+        service: result.governmentService,
+        actionLinks,
+        officialSourceUrls,
+        processSpecificOfficialUrls,
+        keyPoints: topKeyPoints,
+      });
+      checklistLines.forEach((line) => sections.push(`- ${line}`));
+      sections.push(``);
+      addSources(processSpecificOfficialUrls.length > 0 ? processSpecificOfficialUrls : (officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls));
 
       // Section: Official Action Links
       if (actionLinks.length > 0) {
@@ -1563,6 +1663,7 @@ server.tool(
           documentLinks: result.governmentService.documentLinks,
           processingTime: result.governmentService.processingTime,
           requirements: result.governmentService.requirements,
+          fees: result.governmentService.fees,
         } : undefined,
         opinionDistribution: result.opinionDistribution,
         averageCredibility: result.averageCredibility,
