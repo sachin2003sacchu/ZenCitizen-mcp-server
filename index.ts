@@ -1024,9 +1024,91 @@ type ArticleDetail = {
   title: string;
   summary: string;
   highlights: string[];
+  extractedVia: "jina-reader" | "html";
 };
 
+function buildJinaReaderCandidates(url: string): string[] {
+  const target = String(url || "").trim().replace(/^https?:\/\//i, "");
+  if (!target) return [];
+
+  return [
+    `https://r.jina.ai/http://${target}`,
+    `https://r.jina.ai/https://${target}`,
+  ];
+}
+
+function parseJinaReaderArticleDetail(url: string, rawText: string): ArticleDetail | null {
+  const normalizedLines = String(rawText || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (normalizedLines.length === 0) return null;
+
+  const titleLine = normalizedLines.find((line) => /^#\s+/.test(line))
+    || normalizedLines.find((line) => /^title:\s*/i.test(line))
+    || normalizedLines.find((line) => line.length >= 12 && line.length <= 160);
+
+  const title = normalizeLine(
+    String(titleLine || url)
+      .replace(/^#\s+/, "")
+      .replace(/^title:\s*/i, ""),
+    160
+  );
+
+  const blocks = String(rawText || "")
+    .split(/\n{2,}/)
+    .map((block) => normalizeLine(block, 260))
+    .filter((block) => block.length >= 40)
+    .filter((block) => !/^(title|url|source|author|published|date|language|site|host|content):/i.test(block));
+
+  const summary = blocks[0] || title;
+  const highlights = blocks.slice(0, 3);
+
+  return {
+    url,
+    title,
+    summary,
+    highlights,
+    extractedVia: "jina-reader",
+  };
+}
+
+async function fetchJinaReaderText(url: string): Promise<string | null> {
+  for (const candidate of buildJinaReaderCandidates(url)) {
+    try {
+      const response = await fetchWithTimeout(
+        candidate,
+        {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            Accept: "text/plain, text/markdown, */*",
+          },
+        },
+        7000
+      );
+
+      if (!response.ok) continue;
+
+      const text = await response.text();
+      if (text.trim().length >= 120) {
+        return text;
+      }
+    } catch {
+      // Try the next Jina Reader variant.
+    }
+  }
+
+  return null;
+}
+
 async function fetchArticleDetail(url: string): Promise<ArticleDetail | null> {
+  const jinaText = await fetchJinaReaderText(url);
+  if (jinaText) {
+    const jinaDetail = parseJinaReaderArticleDetail(url, jinaText);
+    if (jinaDetail) return jinaDetail;
+  }
+
   try {
     const response = await fetchWithTimeout(
       url,
@@ -1063,14 +1145,14 @@ async function fetchArticleDetail(url: string): Promise<ArticleDetail | null> {
     const summary = description || paragraphs[0] || title;
     const highlights = paragraphs.slice(0, 3);
 
-    return { url, title, summary, highlights };
+    return { url, title, summary, highlights, extractedVia: "html" };
   } catch {
     return null;
   }
 }
 
 async function fetchArticleDetails(urls: string[]): Promise<ArticleDetail[]> {
-  const uniqueUrls = Array.from(new Set(urls)).slice(0, 3);
+  const uniqueUrls = Array.from(new Set(urls.filter(Boolean)));
   const results = await Promise.all(uniqueUrls.map((url) => fetchArticleDetail(url)));
   return results.filter((item): item is ArticleDetail => Boolean(item));
 }
@@ -1325,10 +1407,16 @@ server.tool(
     try {
       const result = await fetchArticlesFromWeb(query);
       const topArticles = result.rankedArticles.slice(0, 6);
+      const articleDetails = await fetchArticleDetails([
+        ...result.fetchedUrls,
+        ...topArticles.map((article) => article.url),
+      ]);
+      const detailByUrl = new Map(articleDetails.map((detail) => [detail.url.toLowerCase(), detail]));
 
       const lines: string[] = [
         `Article search results for: ${query}`,
         `Articles found: ${topArticles.length}`,
+        `Jina Reader extracted data from ${articleDetails.length} fetched links.`,
       ];
 
       if (topArticles.length > 0) {
@@ -1337,6 +1425,12 @@ server.tool(
           lines.push(
             `${i + 1}. ${article.title} | Trust Rank: ${article.rank}/100 (${article.tier.toUpperCase()}) | ${article.url}`
           );
+          const detail = detailByUrl.get(article.url.toLowerCase());
+          if (detail) {
+            lines.push(`   - Extracted via: ${detail.extractedVia === "jina-reader" ? "Jina Reader" : "HTML fallback"}`);
+            lines.push(`   - Summary: ${detail.summary}`);
+            detail.highlights.slice(0, 2).forEach((highlight) => lines.push(`   - Highlight: ${highlight}`));
+          }
         });
       } else {
         lines.push("No reliable article links were found for this query.");
@@ -1468,7 +1562,10 @@ server.tool(
       const webArticleResult = await fetchArticlesFromWeb(query);
       const rankedArticlesFromWeb = webArticleResult.rankedArticles;
       const rankedArticles = mergeRankedArticles(rankedArticlesFromContext, rankedArticlesFromWeb);
-      const articleDetails = await fetchArticleDetails(rankedArticles.map((a) => a.url));
+      const articleDetails = await fetchArticleDetails([
+        ...rankedArticles.map((a) => a.url),
+        ...webArticleResult.fetchedUrls,
+      ]);
       const allSourceUrls = Array.from(
         new Set(
           [
@@ -1652,6 +1749,7 @@ server.tool(
             `${i + 1}. ${article.title} | Trust Rank: ${article.rank}/100 (${article.tier.toUpperCase()}) | Reason: ${article.rationale}`
           );
           sections.push(`   - Article link: ${article.url}`);
+          if (detail) sections.push(`   - Extracted via: ${detail.extractedVia === "jina-reader" ? "Jina Reader" : "HTML fallback"}`);
           if (detail?.summary) sections.push(`   - Extracted summary: ${detail.summary}`);
           if (detail?.highlights.length) {
             detail.highlights.slice(0, 2).forEach((highlight) => sections.push(`   - Extracted line: ${highlight}`));
