@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { MCPServer, object, text, markdown } from "mcp-use/server";
 import { z } from "zod";
+import { load } from "cheerio";
 import { searchYouTube, searchTwitter, researchGovernmentQuery } from "./api.js";
 import type { YouTubeResults, TwitterResults } from "./resources/api-results/types.js";
 
@@ -839,6 +840,8 @@ function buildFieldRealityChecklist(input: {
     requirements?: string[];
     fees?: string[];
     processingTime?: string;
+    steps?: string[];
+    contactInfo?: string;
   };
   actionLinks: Array<{ label: string; url: string; purpose: string }>;
   officialSourceUrls: string[];
@@ -847,8 +850,9 @@ function buildFieldRealityChecklist(input: {
 }): string[] {
   const requirements = (input.service?.requirements || []).map((x) => normalizeLine(x, 260)).filter(Boolean);
   const fees = (input.service?.fees || []).map((x) => normalizeLine(x, 220)).filter(Boolean);
+  const steps = (input.service?.steps || []).map((x) => normalizeLine(x, 260)).filter(Boolean);
   const keyPointLines = (input.keyPoints || []).map((x) => normalizeLine(x.text, 260)).filter(Boolean);
-  const allEvidenceLines = [...requirements, ...fees, ...keyPointLines];
+  const allEvidenceLines = [...requirements, ...fees, ...steps, ...keyPointLines];
 
   const primarySource =
     input.processSpecificOfficialUrls[0] ||
@@ -875,6 +879,7 @@ function buildFieldRealityChecklist(input: {
   const timeline = input.service?.processingTime
     ? normalizeLine(input.service.processingTime, 160)
     : undefined;
+  const contactInfo = input.service?.contactInfo ? normalizeLine(input.service.contactInfo, 220) : undefined;
 
   const out: string[] = [];
 
@@ -887,12 +892,14 @@ function buildFieldRealityChecklist(input: {
   out.push(`7. Document format specifics: ${formatLine || "No explicit file format/size/notarization specification found in retrieved sources."}`);
   out.push(`8. Realistic timeline: ${timeline ? `Official timeline found: ${timeline}. Practical on-ground timeline was not explicitly found in retrieved sources.` : "Not explicitly found in retrieved sources."}`);
   out.push(`9. Office hours and counter timings: ${officeHoursLine || "Office-hour details were not found in retrieved sources."}`);
-  out.push(`10. Bribe solicitation warning: ${bribeLine || "Not explicitly found in retrieved sources."}`);
-  out.push(`11. What happens at each office: ${perOfficeLine || "Per-office handoff details were not explicitly documented in retrieved data."}`);
-  out.push(`12. Common rejection/return reasons: ${rejectionLine || "No explicit rejection reasons found in retrieved sources."}`);
-  out.push(`13. How to track application: ${statusLikeUrl || helpLink || "No explicit status-tracking portal identified in retrieved links."}`);
-  out.push(`14. How output is delivered: ${deliveryLine || "Delivery mode (download/SMS/physical copy) not explicitly found in retrieved sources."}`);
-  out.push(`15. Grievance redressal and escalation: ${helpLink ? `Official grievance/help link found: ${helpLink}` : "Sakala grievance path or RTI escalation details were not explicitly present in retrieved sources."}`);
+  out.push(`10. Official steps extracted: ${steps.length > 0 ? steps.join(" | ") : "Not explicitly found in retrieved sources."}`);
+  out.push(`11. Official contact info: ${contactInfo || "Not explicitly found in retrieved sources."}`);
+  out.push(`12. Bribe solicitation warning: ${bribeLine || "Not explicitly found in retrieved sources."}`);
+  out.push(`13. What happens at each office: ${perOfficeLine || "Per-office handoff details were not explicitly documented in retrieved data."}`);
+  out.push(`14. Common rejection/return reasons: ${rejectionLine || "No explicit rejection reasons found in retrieved sources."}`);
+  out.push(`15. How to track application: ${statusLikeUrl || helpLink || "No explicit status-tracking portal identified in retrieved links."}`);
+  out.push(`16. How output is delivered: ${deliveryLine || "Delivery mode (download/SMS/physical copy) not explicitly found in retrieved sources."}`);
+  out.push(`17. Grievance redressal and escalation: ${helpLink ? `Official grievance/help link found: ${helpLink}` : "Sakala grievance path or RTI escalation details were not explicitly present in retrieved sources."}`);
 
   return out.map((line) => (primarySource ? formatClaimWithSource(line, primarySource) : line));
 }
@@ -901,6 +908,8 @@ function buildVerifiedExtraDetails(input: {
   requirements: string[];
   fees: string[];
   processingTime?: string;
+  steps?: string[];
+  contactInfo?: string;
   officialSourceUrls: string[];
   processSpecificOfficialUrls: string[];
   fieldRealityLines?: string[];
@@ -910,7 +919,9 @@ function buildVerifiedExtraDetails(input: {
 
   const cleanedReqs = input.requirements.map((x) => normalizeLine(x, 220)).filter(Boolean).slice(0, 6);
   const cleanedFees = input.fees.map((x) => normalizeLine(x, 220)).filter(Boolean).slice(0, 4);
+  const cleanedSteps = (input.steps || []).map((x) => normalizeLine(x, 260)).filter(Boolean).slice(0, 6);
   const timeline = input.processingTime ? normalizeLine(input.processingTime, 160) : "";
+  const contactInfo = input.contactInfo ? normalizeLine(input.contactInfo, 220) : "";
 
   if (cleanedReqs.length > 0) {
     cleanedReqs.forEach((r) => lines.push(r));
@@ -920,8 +931,16 @@ function buildVerifiedExtraDetails(input: {
     cleanedFees.forEach((f) => lines.push(f));
   }
 
+  if (cleanedSteps.length > 0) {
+    cleanedSteps.forEach((step) => lines.push(step));
+  }
+
   if (timeline) {
     lines.push(timeline);
+  }
+
+  if (contactInfo) {
+    lines.push(contactInfo);
   }
 
   if (input.fieldRealityLines && input.fieldRealityLines.length > 0) {
@@ -998,6 +1017,62 @@ function sanitizeReportLines(lines: string[]): string[] {
   return lines
     .map((line) => line.replace(/\s+$/g, ""))
     .filter((line) => !isDisallowedOutputLine(line));
+}
+
+type ArticleDetail = {
+  url: string;
+  title: string;
+  summary: string;
+  highlights: string[];
+};
+
+async function fetchArticleDetail(url: string): Promise<ArticleDetail | null> {
+  try {
+    const response = await fetchWithTimeout(
+      url,
+      {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        },
+      },
+      5000
+    );
+
+    if (!response.ok) return null;
+
+    const html = await response.text();
+    if (!html || html.length < 200) return null;
+
+    const $ = load(html);
+    const title = normalizeLine(
+      $("meta[property='og:title']").attr("content") || $("title").text() || $("h1").first().text() || "Article reference",
+      160
+    );
+    const description = normalizeLine(
+      $("meta[name='description']").attr("content") || $("meta[property='og:description']").attr("content") || "",
+      240
+    );
+
+    const paragraphs = $("article p, main p, .article-body p, .story-body p, .content p, p")
+      .slice(0, 12)
+      .map((_i, elem) => normalizeLine($(elem).text(), 220))
+      .get()
+      .filter((line) => line.length >= 50 && !isLikelyNoisyComment(line) && !isLikelyPromotional(line))
+      .slice(0, 3);
+
+    const summary = description || paragraphs[0] || title;
+    const highlights = paragraphs.slice(0, 3);
+
+    return { url, title, summary, highlights };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchArticleDetails(urls: string[]): Promise<ArticleDetail[]> {
+  const uniqueUrls = Array.from(new Set(urls)).slice(0, 3);
+  const results = await Promise.all(uniqueUrls.map((url) => fetchArticleDetail(url)));
+  return results.filter((item): item is ArticleDetail => Boolean(item));
 }
 
 function splitReportSections(reportMarkdown: string): Array<{ heading: string; body: string }> {
@@ -1393,6 +1468,7 @@ server.tool(
       const webArticleResult = await fetchArticlesFromWeb(query);
       const rankedArticlesFromWeb = webArticleResult.rankedArticles;
       const rankedArticles = mergeRankedArticles(rankedArticlesFromContext, rankedArticlesFromWeb);
+      const articleDetails = await fetchArticleDetails(rankedArticles.map((a) => a.url));
       const allSourceUrls = Array.from(
         new Set(
           [
@@ -1459,6 +1535,8 @@ server.tool(
         if (svc.documentLinks?.length) sections.push(`Official document/form links found: ${svc.documentLinks.length}`);
         if (svc.requirements?.length) sections.push(`Official requirements found: ${svc.requirements.length}`);
         if (svc.fees?.length) sections.push(`Official fee notes found: ${svc.fees.length}`);
+        if (svc.steps?.length) sections.push(`Official steps extracted: ${svc.steps.slice(0, 5).join(" | ")}`);
+        if (svc.contactInfo) sections.push(`Official contact info extracted: ${svc.contactInfo}`);
         sections.push(``);
         addSources(processSpecificOfficialUrls.length > 0 ? processSpecificOfficialUrls : (officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls));
       } else {
@@ -1478,6 +1556,12 @@ server.tool(
         sections.push(`Information:`);
         const reqSource = processSpecificOfficialUrls[0] || officialSourceUrls[0];
         if (svc.processingTime) sections.push(formatClaimWithSource(`Processing Time: ${svc.processingTime}`, reqSource));
+        if (svc.steps?.length) {
+          svc.steps.slice(0, 5).forEach((step: string) => {
+            sections.push(formatClaimWithSource(`Step: ${normalizeLine(step, 220)}`, reqSource));
+          });
+        }
+        if (svc.contactInfo) sections.push(formatClaimWithSource(`Contact: ${svc.contactInfo}`, reqSource));
         if (svc.fees && svc.fees.length > 0) {
           svc.fees.slice(0, 4).forEach((feeLine: string) => {
             sections.push(formatClaimWithSource(`Fee detail: ${normalizeLine(feeLine, 220)}`, reqSource));
@@ -1521,6 +1605,8 @@ server.tool(
         requirements: result.governmentService?.requirements || [],
         fees: result.governmentService?.fees || [],
         processingTime: result.governmentService?.processingTime,
+        steps: result.governmentService?.steps || [],
+        contactInfo: result.governmentService?.contactInfo,
         officialSourceUrls,
         processSpecificOfficialUrls,
         fieldRealityLines: checklistLines,
@@ -1561,10 +1647,15 @@ server.tool(
       sections.push(`Information:`);
       if (rankedArticles.length > 0) {
         rankedArticles.forEach((article, i) => {
+          const detail = articleDetails.find((item) => item.url === article.url);
           sections.push(
             `${i + 1}. ${article.title} | Trust Rank: ${article.rank}/100 (${article.tier.toUpperCase()}) | Reason: ${article.rationale}`
           );
           sections.push(`   - Article link: ${article.url}`);
+          if (detail?.summary) sections.push(`   - Extracted summary: ${detail.summary}`);
+          if (detail?.highlights.length) {
+            detail.highlights.slice(0, 2).forEach((highlight) => sections.push(`   - Extracted line: ${highlight}`));
+          }
         });
       } else {
         sections.push(`- No article-style references were retrieved for this query in the current context.`);

@@ -316,6 +316,8 @@ export async function compileResearchResult(
       requirements: extractRequirementsFromScraped(inferred.scrapedInfo),
       fees: extractFeesFromScraped(inferred.scrapedInfo),
       processingTime: extractProcessingTimeFromScraped(inferred.scrapedInfo),
+      steps: extractStepsFromScraped(inferred.scrapedInfo),
+      contactInfo: extractContactInfoFromScraped(inferred.scrapedInfo),
       relatedServices: [],
       state: inferred.state,
     };
@@ -486,6 +488,27 @@ function extractProcessingTimeFromScraped(scrapedInfo?: ScrapedPageInfo[]): stri
     .filter(Boolean);
   
   return times[0] || "Varies by service";
+}
+
+function extractStepsFromScraped(scrapedInfo?: ScrapedPageInfo[]): string[] {
+  if (!scrapedInfo?.length) return [];
+
+  const steps = scrapedInfo
+    .flatMap((info) => info.steps || [])
+    .map((line) => String(line || "").replace(/\s+/g, " ").trim())
+    .filter((line) => line.length >= 8 && line.length <= 260);
+
+  return [...new Set(steps)].slice(0, 12);
+}
+
+function extractContactInfoFromScraped(scrapedInfo?: ScrapedPageInfo[]): string {
+  if (!scrapedInfo?.length) return "";
+
+  const contact = scrapedInfo
+    .map((info) => String(info.contactInfo || "").replace(/\s+/g, " ").trim())
+    .find((line) => line.length >= 8);
+
+  return contact || "";
 }
 
 function extractFeesFromScraped(scrapedInfo?: ScrapedPageInfo[]): string[] {

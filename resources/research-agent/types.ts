@@ -74,6 +74,8 @@ export interface GovernmentService {
   requirements: string[];
   fees?: string[];
   processingTime: string;
+  steps?: string[];
+  contactInfo?: string;
   relatedServices: string[];
   // Optional list of document/form URLs discovered on official sites
   documentLinks?: string[];
