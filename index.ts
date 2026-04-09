@@ -61,15 +61,9 @@ function toPlainTextReport(input: string): string {
   const allowedSections = [
     "About This Service",
     "Requirements & Process",
-    "Verified Extra Details",
     "Official Links",
     "Related Articles (Context Only)",
     "Related YouTube Videos",
-    "Community Discussion (Twitter/X)",
-    "Key Insights",
-    "Recommended Next Steps",
-    "Detailed Evidence Ledger",
-    "All Fetched Links",
   ];
 
   const normalizeHeading = (line: string): string =>
@@ -919,27 +913,23 @@ function buildVerifiedExtraDetails(input: {
   const timeline = input.processingTime ? normalizeLine(input.processingTime, 160) : "";
 
   if (cleanedReqs.length > 0) {
-    lines.push("Extracted requirement/doc lines from retrieved official context:");
-    cleanedReqs.forEach((r, i) => lines.push(`${i + 1}. ${r}`));
+    cleanedReqs.forEach((r) => lines.push(r));
   }
 
   if (cleanedFees.length > 0) {
-    lines.push("Extracted fee lines from retrieved official context:");
-    cleanedFees.forEach((f, i) => lines.push(`${i + 1}. ${f}`));
+    cleanedFees.forEach((f) => lines.push(f));
   }
 
   if (timeline) {
-    lines.push(`Extracted processing-time line: ${timeline}`);
+    lines.push(timeline);
   }
 
   if (input.fieldRealityLines && input.fieldRealityLines.length > 0) {
-    lines.push("Verified field notes extracted from retrieved context:");
     input.fieldRealityLines.slice(0, 15).forEach((item) => {
       const cleaned = normalizeLine(item, 260).replace(/^\d+\.\s*/, "");
       const separatorIndex = cleaned.indexOf(": ");
-      const label = separatorIndex >= 0 ? cleaned.slice(0, separatorIndex) : cleaned;
-      const value = separatorIndex >= 0 ? cleaned.slice(separatorIndex + 2) : "Not explicitly found in retrieved sources.";
-      lines.push(`${label}: ${value}`);
+      const valueOnly = separatorIndex >= 0 ? cleaned.slice(separatorIndex + 2) : cleaned;
+      lines.push(valueOnly || "Not explicitly found in retrieved sources.");
     });
   }
 
