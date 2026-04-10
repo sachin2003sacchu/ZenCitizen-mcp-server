@@ -1024,8 +1024,24 @@ type ArticleDetail = {
   title: string;
   summary: string;
   highlights: string[];
+  content: string;
   extractedVia: "jina-reader" | "html";
 };
+
+function extractReadableJinaContent(rawText: string): string {
+  const lines = String(rawText || "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+$/g, ""));
+
+  const filtered = lines.filter((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return true;
+    if (/^(title|url source|published time|source|author|language|site|host|content):/i.test(trimmed)) return false;
+    return true;
+  });
+
+  return filtered.join("\n").replace(/\n{4,}/g, "\n\n\n").trim();
+}
 
 function buildJinaReaderCandidates(url: string): string[] {
   const target = String(url || "").trim().replace(/^https?:\/\//i, "");
@@ -1070,6 +1086,7 @@ function parseJinaReaderArticleDetail(url: string, rawText: string): ArticleDeta
     title,
     summary,
     highlights,
+    content: extractReadableJinaContent(rawText),
     extractedVia: "jina-reader",
   };
 }
@@ -1140,12 +1157,19 @@ async function fetchArticleDetail(url: string): Promise<ArticleDetail | null> {
       .map((_i, elem) => normalizeLine($(elem).text(), 220))
       .get()
       .filter((line) => line.length >= 50 && !isLikelyNoisyComment(line) && !isLikelyPromotional(line))
-      .slice(0, 3);
+      .slice(0, 12);
 
     const summary = description || paragraphs[0] || title;
     const highlights = paragraphs.slice(0, 3);
 
-    return { url, title, summary, highlights, extractedVia: "html" };
+    return {
+      url,
+      title,
+      summary,
+      highlights,
+      content: paragraphs.join("\n\n"),
+      extractedVia: "html",
+    };
   } catch {
     return null;
   }
@@ -1430,6 +1454,17 @@ server.tool(
             lines.push(`   - Extracted via: ${detail.extractedVia === "jina-reader" ? "Jina Reader" : "HTML fallback"}`);
             lines.push(`   - Summary: ${detail.summary}`);
             detail.highlights.slice(0, 2).forEach((highlight) => lines.push(`   - Highlight: ${highlight}`));
+            if (detail.content) {
+              lines.push("   - Full extracted content:");
+              detail.content
+                .split(/\n{2,}/)
+                .map((block) => block.trim())
+                .filter(Boolean)
+                .slice(0, 40)
+                .forEach((block) => {
+                  lines.push(`     ${block}`);
+                });
+            }
           }
         });
       } else {
@@ -1753,6 +1788,15 @@ server.tool(
           if (detail?.summary) sections.push(`   - Extracted summary: ${detail.summary}`);
           if (detail?.highlights.length) {
             detail.highlights.slice(0, 2).forEach((highlight) => sections.push(`   - Extracted line: ${highlight}`));
+          }
+          if (detail?.content) {
+            sections.push(`   - Full extracted content:`);
+            detail.content
+              .split(/\n{2,}/)
+              .map((block) => block.trim())
+              .filter(Boolean)
+              .slice(0, 40)
+              .forEach((block) => sections.push(`     ${block}`));
           }
         });
       } else {
