@@ -1,4 +1,5 @@
 import axios from "axios";
+import { load } from "cheerio";
 import type { YouTubeResults, TwitterResults, YouTubeVideo, YouTubeComment, TwitterTweet } from "./resources/api-results/types.js";
 import type { ResearchQueryResult } from "./resources/research-agent/types.js";
 import { processYouTubeResults, processTwitterResults, compileResearchResult } from "./resources/research-agent/orchestrator.js";
@@ -6,6 +7,18 @@ import { summarizeForVideo } from "./resources/research-agent/llm.js";
 
 const API_TIMEOUT_MS = 8000;
 const COMMENT_TIMEOUT_MS = 5000;
+
+export type QuoraFAQ = {
+  question: string;
+  answer: string;
+  url: string;
+};
+
+export type QuoraFAQResults = {
+  query: string;
+  count: number;
+  faqs: QuoraFAQ[];
+};
 
 function normalizeBearerToken(rawToken: string): string {
   const trimmed = rawToken
@@ -24,6 +37,189 @@ function normalizeBearerToken(rawToken: string): string {
   }
 
   return trimmed;
+}
+
+function normalizeText(input: string, maxLength = 420): string {
+  return String(input || "")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s\-:|]+|[\s]+$/g, "")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function stripQuoraBranding(input: string): string {
+  return normalizeText(input)
+    .replace(/\s*[\-|:]\s*Quora\s*$/i, "")
+    .replace(/^Quora\s*[\-|:]\s*/i, "");
+}
+
+function tokenizeForMatch(input: string): string[] {
+  return normalizeText(input, 600)
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .filter((token) => token.length >= 4)
+    .filter((token) => !["what", "when", "where", "which", "your", "from", "with", "about", "have", "that", "this"].includes(token));
+}
+
+function extractDuckDuckGoResultUrls(html: string): string[] {
+  const decoded = html
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+
+  const urls = new Set<string>();
+
+  const uddgMatches = decoded.match(/uddg=([^&"'\s>]+)/g) || [];
+  for (const match of uddgMatches) {
+    const encoded = match.replace(/^uddg=/, "").trim();
+    if (!encoded) continue;
+    try {
+      const raw = decodeURIComponent(encoded);
+      if (raw.startsWith("http")) urls.add(raw);
+    } catch {
+      // Ignore malformed URL encodings.
+    }
+  }
+
+  const hrefMatches = decoded.match(/href=["']([^"']+)["']/gi) || [];
+  for (const attr of hrefMatches) {
+    const href = attr.replace(/^href=["']/i, "").replace(/["']$/g, "").trim();
+    if (!href) continue;
+    try {
+      const resolved = new URL(href, "https://duckduckgo.com");
+      const uddg = resolved.searchParams.get("uddg");
+      if (uddg) {
+        const decodedTarget = decodeURIComponent(uddg);
+        if (decodedTarget.startsWith("http")) urls.add(decodedTarget);
+      } else if (resolved.protocol.startsWith("http")) {
+        urls.add(resolved.toString());
+      }
+    } catch {
+      // Ignore malformed href values.
+    }
+  }
+
+  return Array.from(urls);
+}
+
+function extractQuestionAndAnswerFromQuoraHtml(html: string, url: string): QuoraFAQ | null {
+  const $ = load(html);
+
+  const title =
+    $("meta[property='og:title']").attr("content") ||
+    $("meta[name='twitter:title']").attr("content") ||
+    $("title").text() ||
+    "";
+
+  const description =
+    $("meta[property='og:description']").attr("content") ||
+    $("meta[name='description']").attr("content") ||
+    $("meta[name='twitter:description']").attr("content") ||
+    "";
+
+  const rawQuestion = stripQuoraBranding(title);
+  const fallbackQuestion = description.includes("?") ? description.split("?")[0] + "?" : "";
+  const question = normalizeText(rawQuestion || fallbackQuestion, 220);
+
+  let answer = normalizeText(description, 520);
+
+  if (!answer || answer.length < 45) {
+    const paragraphTexts: string[] = [];
+    const nodes = $("p, span").toArray();
+    for (const node of nodes) {
+      if (paragraphTexts.length >= 20) break;
+      const extracted = normalizeText($(node).text(), 300);
+      if (extracted.length >= 55) paragraphTexts.push(extracted);
+    }
+
+    answer = normalizeText(paragraphTexts.join(" "), 520);
+  }
+
+  if (!question || question.length < 8) return null;
+  if (!answer || answer.length < 45) return null;
+
+  return {
+    question,
+    answer,
+    url,
+  };
+}
+
+export async function searchQuoraFAQs(query: string, limit = 5): Promise<QuoraFAQResults> {
+  const safeLimit = Math.max(1, Math.min(10, limit));
+  const searchUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(`${query} site:quora.com`)}`;
+
+  const searchResponse = await axios.get<string>(searchUrl, {
+    timeout: API_TIMEOUT_MS,
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+      "Accept-Language": "en-US,en;q=0.9",
+    },
+  });
+
+  const allResultUrls = extractDuckDuckGoResultUrls(searchResponse.data)
+    .filter((resultUrl) => /https?:\/\/(www\.)?quora\.com\//i.test(resultUrl))
+    .filter((resultUrl) => !/\/profile\//i.test(resultUrl));
+
+  const uniqueUrls: string[] = [];
+  const seen = new Set<string>();
+  for (const resultUrl of allResultUrls) {
+    const normalized = resultUrl.toLowerCase();
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    uniqueUrls.push(resultUrl);
+    if (uniqueUrls.length >= 12) break;
+  }
+
+  const queryTerms = tokenizeForMatch(query);
+  const faqs: Array<QuoraFAQ & { relevance: number }> = [];
+
+  await Promise.all(
+    uniqueUrls.map(async (resultUrl) => {
+      try {
+        const pageResponse = await axios.get<string>(resultUrl, {
+          timeout: API_TIMEOUT_MS,
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept-Language": "en-US,en;q=0.9",
+          },
+        });
+
+        const extracted = extractQuestionAndAnswerFromQuoraHtml(pageResponse.data, resultUrl);
+        if (!extracted) return;
+
+        const corpus = `${extracted.question} ${extracted.answer}`.toLowerCase();
+        const relevance = queryTerms.reduce((score, term) => score + (corpus.includes(term) ? 1 : 0), 0);
+        if (queryTerms.length > 0 && relevance === 0) return;
+
+        faqs.push({ ...extracted, relevance });
+      } catch {
+        // Skip inaccessible or anti-bot-protected pages and continue.
+      }
+    })
+  );
+
+  const deduped = new Map<string, QuoraFAQ & { relevance: number }>();
+  for (const faq of faqs) {
+    const key = faq.question.toLowerCase();
+    const existing = deduped.get(key);
+    if (!existing || faq.relevance > existing.relevance) {
+      deduped.set(key, faq);
+    }
+  }
+
+  const topFaqs = Array.from(deduped.values())
+    .sort((a, b) => b.relevance - a.relevance)
+    .slice(0, safeLimit)
+    .map(({ question, answer, url }) => ({ question, answer, url }));
+
+  return {
+    query,
+    count: topFaqs.length,
+    faqs: topFaqs,
+  };
 }
 
 /**

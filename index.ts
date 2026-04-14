@@ -2,7 +2,7 @@ import "dotenv/config";
 import { MCPServer, object, text, markdown } from "mcp-use/server";
 import { z } from "zod";
 import { load } from "cheerio";
-import { searchYouTube, searchTwitter, researchGovernmentQuery } from "./api.js";
+import { searchYouTube, searchTwitter, searchQuoraFAQs, researchGovernmentQuery } from "./api.js";
 import type { YouTubeResults, TwitterResults } from "./resources/api-results/types.js";
 
 function buildActionLinks(service?: { officialLinks?: string[]; documentLinks?: string[] }) {
@@ -1557,6 +1557,45 @@ server.tool(
       return text(lines.join("\n"));
     } catch (error) {
       return text(`Error searching articles: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+);
+
+/**
+ * QUORA FAQ SEARCH TOOL
+ * Scrapes query-relevant Quora pages and returns only Q&A pairs.
+ */
+server.tool(
+  {
+    name: "search-quora-faq",
+    description: "Search Quora and return only query-relevant FAQ style Q&A pairs",
+    schema: z.object({
+      query: z.string().describe("Query to find relevant Quora questions and answers"),
+      limit: z.number().int().min(1).max(10).default(5).describe("Maximum number of Q&A pairs to return"),
+    }),
+  },
+  async ({ query, limit }: { query: string; limit?: number }) => {
+    try {
+      const result = await searchQuoraFAQs(query, limit ?? 5);
+      const lines: string[] = [
+        `Quora FAQs for: ${query}`,
+        `Q&A pairs found: ${result.count}`,
+      ];
+
+      if (result.faqs.length > 0) {
+        lines.push("Relevant Q&A:");
+        result.faqs.forEach((faq, index) => {
+          lines.push(`${index + 1}. Q: ${faq.question}`);
+          lines.push(`   A: ${faq.answer}`);
+          lines.push(`   Source: ${faq.url}`);
+        });
+      } else {
+        lines.push("No relevant Quora Q&A pairs were found for this query.");
+      }
+
+      return text(lines.join("\n"));
+    } catch (error) {
+      return text(`Error searching Quora FAQs: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 );
