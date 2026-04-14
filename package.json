@@ -25,7 +25,10 @@
     "dev": "mcp-use dev --no-hmr",
     "start": "mcp-use start",
     "deploy": "mcp-use deploy",
-    "postinstall": "mcp-use generate-types || true"
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:ui": "vitest --ui",
+    "postinstall": "echo Skipping postinstall"
   },
   "dependencies": {
     "@openai/apps-sdk-ui": "^0.2.1",
@@ -48,6 +51,8 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.2.0",
+    "@vitest/ui": "^1.0.4",
+    "vitest": "^1.0.4",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.1"
