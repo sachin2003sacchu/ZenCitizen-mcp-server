@@ -1019,11 +1019,77 @@ function sanitizeReportLines(lines: string[]): string[] {
     .filter((line) => !isDisallowedOutputLine(line));
 }
 
+function isBoilerplateArticleLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return true;
+
+  const lower = trimmed.toLowerCase();
+  const hardNoisePatterns = [
+    /^markdown content:?$/i,
+    /^(url source|published time|source|author|language|site|host|content):/i,
+    /^sign in/i,
+    /^follow us:?$/i,
+    /^advertisement$/i,
+    /^advertisements?$/i,
+    /^epaper$/i,
+    /^opens in new tab$/i,
+    /^last updated\s*:/i,
+    /^pic for representation\.?$/i,
+    /^dh photo/i,
+    /^home\s*(>|\/|$)/i,
+    /^home\s*»/i,
+    /^https?:\/\/\S+$/i,
+  ];
+
+  if (hardNoisePatterns.some((pattern) => pattern.test(trimmed))) return true;
+  if (/^!\[.*\]\(https?:\/\/[^)]+\)/.test(trimmed)) return true;
+  if (/^\[\]\(https?:\/\//.test(trimmed)) return true;
+  if ((trimmed.match(/https?:\/\//g) || []).length >= 2) return true;
+  if (/^[\[\]().,/|:;\-+_ ]+$/.test(trimmed)) return true;
+
+  const menuKeywordHits = [
+    "india", "karnataka", "opinion", "world", "business", "sports", "video",
+    "entertainment", "trending", "photos", "technology", "lifestyle", "assembly polls",
+    "facebook", "instagram", "youtube", "telegram", "whatsapp", "sign in",
+  ].filter((token) => lower.includes(token)).length;
+
+  // Short menu-like lines are typically navigation/boilerplate.
+  if (trimmed.length <= 90 && menuKeywordHits >= 2) return true;
+  if (/^[a-z ]+\s>\s[a-z ]+$/i.test(trimmed)) return true;
+  if (/^[^a-z0-9]*»[^a-z0-9]*$/i.test(trimmed)) return true;
+  if ((trimmed.match(/»/g) || []).length >= 2) return true;
+
+  return false;
+}
+
+function normalizeArticleContentLines(lines: string[], maxBlocks = 120): string {
+  const deduped = new Set<string>();
+  const normalized = lines
+    .map((line) => line.replace(/\[([^\]]+)\]\(https?:\/\/[^)]+\)/g, "$1"))
+    .map((line) => line.replace(/https?:\/\/\S+/g, ""))
+    .map((line) => line.replace(/^#+\s*/, ""))
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .filter((line) => !isBoilerplateArticleLine(line))
+    .filter((line) => {
+      // Prefer sentence-like lines and substantial fragments.
+      const looksSentenceLike = /[.!?]$/.test(line) || /[:,)]$/.test(line);
+      return line.length >= 55 || (line.length >= 35 && looksSentenceLike);
+    })
+    .filter((line) => {
+      const key = line.toLowerCase();
+      if (deduped.has(key)) return false;
+      deduped.add(key);
+      return true;
+    })
+    .slice(0, maxBlocks);
+
+  return normalized.join("\n\n").trim();
+}
+
 type ArticleDetail = {
   url: string;
   title: string;
-  summary: string;
-  highlights: string[];
   content: string;
   extractedVia: "jina-reader" | "html";
 };
@@ -1033,14 +1099,7 @@ function extractReadableJinaContent(rawText: string): string {
     .split(/\r?\n/)
     .map((line) => line.replace(/\s+$/g, ""));
 
-  const filtered = lines.filter((line) => {
-    const trimmed = line.trim();
-    if (!trimmed) return true;
-    if (/^(title|url source|published time|source|author|language|site|host|content):/i.test(trimmed)) return false;
-    return true;
-  });
-
-  return filtered.join("\n").replace(/\n{4,}/g, "\n\n\n").trim();
+  return normalizeArticleContentLines(lines, 120);
 }
 
 function buildJinaReaderCandidates(url: string): string[] {
@@ -1072,21 +1131,12 @@ function parseJinaReaderArticleDetail(url: string, rawText: string): ArticleDeta
     160
   );
 
-  const blocks = String(rawText || "")
-    .split(/\n{2,}/)
-    .map((block) => normalizeLine(block, 260))
-    .filter((block) => block.length >= 40)
-    .filter((block) => !/^(title|url|source|author|published|date|language|site|host|content):/i.test(block));
-
-  const summary = blocks[0] || title;
-  const highlights = blocks.slice(0, 3);
+  const cleanedContent = extractReadableJinaContent(rawText);
 
   return {
     url,
     title,
-    summary,
-    highlights,
-    content: extractReadableJinaContent(rawText),
+    content: cleanedContent,
     extractedVia: "jina-reader",
   };
 }
@@ -1159,15 +1209,16 @@ async function fetchArticleDetail(url: string): Promise<ArticleDetail | null> {
       .filter((line) => line.length >= 50 && !isLikelyNoisyComment(line) && !isLikelyPromotional(line))
       .slice(0, 12);
 
-    const summary = description || paragraphs[0] || title;
-    const highlights = paragraphs.slice(0, 3);
+    const contentBlocks = [description, ...paragraphs]
+      .map((line) => normalizeLine(line, 320))
+      .filter(Boolean);
+
+    const cleanedHtmlContent = normalizeArticleContentLines(contentBlocks, 80);
 
     return {
       url,
       title,
-      summary,
-      highlights,
-      content: paragraphs.join("\n\n"),
+      content: cleanedHtmlContent,
       extractedVia: "html",
     };
   } catch {
@@ -1440,7 +1491,6 @@ server.tool(
       const lines: string[] = [
         `Article search results for: ${query}`,
         `Articles found: ${topArticles.length}`,
-        `Jina Reader extracted data from ${articleDetails.length} fetched links.`,
       ];
 
       if (topArticles.length > 0) {
@@ -1451,16 +1501,13 @@ server.tool(
           );
           const detail = detailByUrl.get(article.url.toLowerCase());
           if (detail) {
-            lines.push(`   - Extracted via: ${detail.extractedVia === "jina-reader" ? "Jina Reader" : "HTML fallback"}`);
-            lines.push(`   - Summary: ${detail.summary}`);
-            detail.highlights.slice(0, 2).forEach((highlight) => lines.push(`   - Highlight: ${highlight}`));
             if (detail.content) {
               lines.push("   - Full extracted content:");
               detail.content
                 .split(/\n{2,}/)
                 .map((block) => block.trim())
                 .filter(Boolean)
-                .slice(0, 40)
+                .slice(0, 120)
                 .forEach((block) => {
                   lines.push(`     ${block}`);
                 });
@@ -1784,18 +1831,13 @@ server.tool(
             `${i + 1}. ${article.title} | Trust Rank: ${article.rank}/100 (${article.tier.toUpperCase()}) | Reason: ${article.rationale}`
           );
           sections.push(`   - Article link: ${article.url}`);
-          if (detail) sections.push(`   - Extracted via: ${detail.extractedVia === "jina-reader" ? "Jina Reader" : "HTML fallback"}`);
-          if (detail?.summary) sections.push(`   - Extracted summary: ${detail.summary}`);
-          if (detail?.highlights.length) {
-            detail.highlights.slice(0, 2).forEach((highlight) => sections.push(`   - Extracted line: ${highlight}`));
-          }
           if (detail?.content) {
             sections.push(`   - Full extracted content:`);
             detail.content
               .split(/\n{2,}/)
               .map((block) => block.trim())
               .filter(Boolean)
-              .slice(0, 40)
+              .slice(0, 120)
               .forEach((block) => sections.push(`     ${block}`));
           }
         });
