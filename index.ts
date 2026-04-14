@@ -1039,6 +1039,18 @@ function isBoilerplateArticleLine(line: string): boolean {
     /^home\s*(>|\/|$)/i,
     /^home\s*»/i,
     /^https?:\/\/\S+$/i,
+    /^first day first show/i,
+    /^today'?s cache/i,
+    /^science for all/i,
+    /^data point/i,
+    /^health matters/i,
+    /^the hindu on books/i,
+    /^epaper$/i,
+    /^follow us\s*:/i,
+    /^photo credit\b/i,
+    /^pic for representation\b/i,
+    /^advertisement\s*$/i,
+    /^advertisements?\s*$/i,
   ];
 
   if (hardNoisePatterns.some((pattern) => pattern.test(trimmed))) return true;
@@ -1062,29 +1074,54 @@ function isBoilerplateArticleLine(line: string): boolean {
   return false;
 }
 
-function normalizeArticleContentLines(lines: string[], maxBlocks = 120): string {
-  const deduped = new Set<string>();
-  const normalized = lines
-    .map((line) => line.replace(/\[([^\]]+)\]\(https?:\/\/[^)]+\)/g, "$1"))
-    .map((line) => line.replace(/https?:\/\/\S+/g, ""))
-    .map((line) => line.replace(/^#+\s*/, ""))
-    .map((line) => line.replace(/\s+/g, " ").trim())
-    .filter(Boolean)
-    .filter((line) => !isBoilerplateArticleLine(line))
-    .filter((line) => {
-      // Prefer sentence-like lines and substantial fragments.
-      const looksSentenceLike = /[.!?]$/.test(line) || /[:,)]$/.test(line);
-      return line.length >= 55 || (line.length >= 35 && looksSentenceLike);
-    })
-    .filter((line) => {
-      const key = line.toLowerCase();
-      if (deduped.has(key)) return false;
-      deduped.add(key);
-      return true;
-    })
-    .slice(0, maxBlocks);
+function normalizeArticleParagraphs(lines: string[], maxBlocks = 80): string {
+  const cleanedBlocks: string[] = [];
+  const seen = new Set<string>();
 
-  return normalized.join("\n\n").trim();
+  const pushBlock = (rawBlockLines: string[]) => {
+    const block = rawBlockLines
+      .map((line) => line.replace(/\[([^\]]+)\]\(https?:\/\/[^)]+\)/g, "$1"))
+      .map((line) => line.replace(/https?:\/\/\S+/g, ""))
+      .map((line) => line.replace(/^#+\s*/, ""))
+      .map((line) => line.replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .filter((line) => !isBoilerplateArticleLine(line))
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!block) return;
+    if (block.length < 70) return;
+
+    const sentenceCount = (block.match(/[.!?]/g) || []).length;
+    const looksLikeProse = sentenceCount >= 1 || block.length >= 140;
+    if (!looksLikeProse) return;
+
+    const key = block.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    cleanedBlocks.push(block);
+  };
+
+  let currentBlock: string[] = [];
+  for (const rawLine of lines) {
+    const line = String(rawLine || "").replace(/\s+$/g, "");
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      pushBlock(currentBlock);
+      currentBlock = [];
+      continue;
+    }
+
+    if (isBoilerplateArticleLine(trimmed)) continue;
+
+    currentBlock.push(trimmed);
+  }
+
+  pushBlock(currentBlock);
+
+  return cleanedBlocks.slice(0, maxBlocks).join("\n\n").trim();
 }
 
 type ArticleDetail = {
@@ -1099,7 +1136,7 @@ function extractReadableJinaContent(rawText: string): string {
     .split(/\r?\n/)
     .map((line) => line.replace(/\s+$/g, ""));
 
-  return normalizeArticleContentLines(lines, 120);
+  return normalizeArticleParagraphs(lines, 80);
 }
 
 function buildJinaReaderCandidates(url: string): string[] {
@@ -1206,14 +1243,13 @@ async function fetchArticleDetail(url: string): Promise<ArticleDetail | null> {
       .slice(0, 12)
       .map((_i, elem) => normalizeLine($(elem).text(), 220))
       .get()
-      .filter((line) => line.length >= 50 && !isLikelyNoisyComment(line) && !isLikelyPromotional(line))
-      .slice(0, 12);
+      .filter((line) => line.length >= 50 && !isLikelyNoisyComment(line) && !isLikelyPromotional(line));
 
     const contentBlocks = [description, ...paragraphs]
       .map((line) => normalizeLine(line, 320))
       .filter(Boolean);
 
-    const cleanedHtmlContent = normalizeArticleContentLines(contentBlocks, 80);
+    const cleanedHtmlContent = normalizeArticleParagraphs(contentBlocks, 40);
 
     return {
       url,
