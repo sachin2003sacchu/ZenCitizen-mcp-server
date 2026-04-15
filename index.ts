@@ -62,9 +62,15 @@ function toPlainTextReport(input: string): string {
   const allowedSections = [
     "About This Service",
     "Requirements & Process",
+    "Verified Extra Details",
     "Official Links",
     "Related Articles (Context Only)",
     "Related YouTube Videos",
+    "Key Insights",
+    "Recommended Next Steps",
+    "Common Issues & Practical Workarounds",
+    "Articles Related",
+    "YouTube Related",
   ];
 
   const normalizeHeading = (line: string): string =>
@@ -770,7 +776,7 @@ function buildUserFriendlyInsights(
     .map((item) => normalizeLine(item))
     .filter((item) => item.length > 8)
     .slice(0, 3)
-    .map((item) => `Requirement identified from official sources: ${item}`);
+    .map((item) => `From official pages: ${item}`);
 
   const fromKeyPoints = keyPoints
     .map((kp) => normalizeLine(kp.text))
@@ -780,7 +786,7 @@ function buildUserFriendlyInsights(
     .filter((line) => hasGovernmentProcessSignal(line) || hasQuerySignal(line, query))
     .filter((line) => !/\?\s*$/.test(line))
     .slice(0, 4)
-    .map((line) => `Community-reported issue trend: ${line}`);
+    .map((line) => `People commonly report this issue: ${line}`);
 
   return dedupeStrings([...fromRequirements, ...fromKeyPoints]).slice(0, 6);
 }
@@ -794,12 +800,12 @@ function buildUserFriendlyNextSteps(input: {
 
   const applyLink = input.actionLinks.find((a) => a.purpose === "apply") || input.actionLinks[0];
   if (applyLink) {
-    steps.push(`Open the official application portal: ${applyLink.url}`);
+    steps.push(`Start on the official portal: ${applyLink.url}`);
   }
 
   const docLinks = input.actionLinks.filter((a) => a.purpose === "document").slice(0, 2);
   docLinks.forEach((doc) => {
-    steps.push(`Review the official form/document before applying: ${doc.url}`);
+    steps.push(`Read this official form/document before you submit: ${doc.url}`);
   });
 
   input.requirements
@@ -807,22 +813,50 @@ function buildUserFriendlyNextSteps(input: {
     .filter((req) => req.length > 8)
     .slice(0, 3)
     .forEach((req) => {
-      steps.push(`Prepare required detail/document: ${req}`);
+      steps.push(`Keep this ready before applying: ${req}`);
     });
 
   if (input.processingTime) {
     const cleaned = normalizeLine(input.processingTime, 120);
     if (cleaned && !/varies by service/i.test(cleaned)) {
-      steps.push(`Plan follow-up based on the processing timeline: ${cleaned}`);
+      steps.push(`Expected timeline from retrieved sources: ${cleaned}`);
     }
   }
 
   const helpLink = input.actionLinks.find((a) => a.purpose === "help");
   if (helpLink) {
-    steps.push(`Use the official help/status channel if submission fails: ${helpLink.url}`);
+    steps.push(`If you are blocked, use the official help/status channel: ${helpLink.url}`);
   }
 
   return dedupeStrings(steps).slice(0, 7);
+}
+
+function buildPracticalIssuesSection(input: {
+  keyPoints: Array<{ text: string }>;
+  query: string;
+  actionLinks: Array<{ label: string; url: string; purpose: string }>;
+}): string[] {
+  const issueSignals = /(error|invalid|fail|failed|not working|stuck|pending|timeout|captcha|otp|session|payment|reject|rejection|unable|can'?t|cannot)/i;
+  const lines = input.keyPoints
+    .map((kp) => normalizeLine(kp.text, 220))
+    .filter((line) => line.length > 16)
+    .filter((line) => !isLikelyNoisyComment(line) && !isLikelyPromotional(line))
+    .filter((line) => hasGovernmentProcessSignal(line) || hasQuerySignal(line, input.query))
+    .filter((line) => issueSignals.test(line))
+    .slice(0, 5)
+    .map((line) => `- Reported friction: ${line}`);
+
+  const helpLink = input.actionLinks.find((a) => a.purpose === "help")?.url;
+  const statusLink = input.actionLinks.find((a) => /(status|track|acknowledg|token|grievance|sakala)/i.test(a.url))?.url;
+  const fallback = [
+    "- Not explicitly found in retrieved sources: recurring issue patterns for this specific query.",
+  ];
+
+  const assistive: string[] = [];
+  if (statusLink) assistive.push(`- Track status here: ${statusLink}`);
+  if (helpLink && helpLink !== statusLink) assistive.push(`- Escalation/help link found: ${helpLink}`);
+
+  return dedupeStrings([...(lines.length > 0 ? lines : fallback), ...assistive]);
 }
 
 function findFirstMatchingLine(lines: string[], pattern: RegExp): string | undefined {
@@ -1308,12 +1342,12 @@ function validateReportOrThrow(
   const requiredSectionPrefixes = [
     "**About This Service",
     "**Requirements & Process**",
-    "**Verified Extra Details**",
+    "**Verified Extra Details",
     "**Official Links**",
     "**Related Articles (Context Only)**",
     "**Related YouTube Videos**",
-    "**Key Insights**",
-    "**Recommended Next Steps**",
+    "**Key Insights",
+    "**Recommended Next Steps",
     "**Articles Related",
     "**YouTube Related",
   ];
@@ -1322,7 +1356,7 @@ function validateReportOrThrow(
     "**About This Service",
     "**Requirements & Process**",
     "**Official Links**",
-    "**Recommended Next Steps**",
+    "**Recommended Next Steps",
   ];
 
   const sections = splitReportSections(reportMarkdown);
@@ -1572,6 +1606,14 @@ server.tool(
  */
 const SOURCE_FORMAT_INSTRUCTIONS = `Use ONLY the information retrieved from the MCP server context — do not fabricate or guess any facts.
 
+Writing style expectations (Zen Citizen style):
+- Use plain, direct, human language. Avoid legalese and jargon.
+- Prioritize practical guidance over generic explanation.
+- Clearly distinguish official facts vs community-reported issues.
+- Mention friction points (portal errors, delays, retries, office visits) when present in retrieved sources.
+- Keep instructions concise and scannable with short bullets and numbered steps.
+- If information is missing, say so clearly instead of filling gaps.
+
 For every important piece of information, include the supporting source links.
 
 Output Format for each section:
@@ -1805,7 +1847,7 @@ server.tool(
       }
 
       // Section: Additional strict-evidence details (no inference)
-      sections.push(`**Verified Extra Details**`);
+      sections.push(`**Verified Extra Details — Field Reality Checklist**`);
       sections.push(``);
       sections.push(`Information:`);
       const checklistLines = buildFieldRealityChecklist({
@@ -1827,6 +1869,19 @@ server.tool(
         fieldRealityLines: checklistLines,
       });
       extraLines.forEach((line) => sections.push(`- ${line}`));
+      sections.push(``);
+      addSources(processSpecificOfficialUrls.length > 0 ? processSpecificOfficialUrls : (officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls));
+
+      // Section: Common issues and practical workarounds
+      sections.push(`**Common Issues & Practical Workarounds**`);
+      sections.push(``);
+      sections.push(`Information:`);
+      const practicalIssues = buildPracticalIssuesSection({
+        keyPoints: topKeyPoints,
+        query,
+        actionLinks,
+      });
+      practicalIssues.forEach((line) => sections.push(line));
       sections.push(``);
       addSources(processSpecificOfficialUrls.length > 0 ? processSpecificOfficialUrls : (officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls));
 
@@ -1954,7 +2009,7 @@ server.tool(
       }
 
       // Section: Key Insights
-      sections.push(`**Key Insights**`);
+      sections.push(`**Key Insights — What to Expect in Practice**`);
       sections.push(``);
       sections.push(`Information:`);
       finalInsights.forEach((item: string) => sections.push(`- ${item}`));
@@ -1962,7 +2017,7 @@ server.tool(
       addSources(officialSourceUrls.length > 0 ? officialSourceUrls : allSourceUrls);
 
       // Section: Recommended Next Steps
-      sections.push(`**Recommended Next Steps**`);
+      sections.push(`**Recommended Next Steps — Step-by-Step Plan**`);
       sections.push(``);
       sections.push(`Information:`);
       const nextStepSource = processSpecificOfficialUrls[0] || officialSourceUrls[0];
