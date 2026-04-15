@@ -1,7 +1,9 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
+import axios from "axios";
 import { searchYouTube, searchTwitter, searchBothPlatforms, researchGovernmentQuery } from "./api";
 
 // Mock axios module
+vi.mock("axios");
 // Set environment variables for tests
 process.env.YOUTUBE_API_KEY = "test-youtube-key";
 process.env.TWITTER_BEARER_TOKEN = "test-twitter-token";
